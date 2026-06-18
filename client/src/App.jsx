@@ -1,10 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { extractTiles, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
 
-// Request templates per API. The endpoint is resolved client-side from the
-// base URLs served by /api/config (server/.env) so the URL field shows the real
-// value, not a ${VAR} token. The websiteUuid / API key vary per request, so
-// fill them in before sending. Edit freely.
+// Request templates per API. The endpoint is resolved client-side from BASES
+// so the URL field shows the real value. The websiteUuid / API key vary per
+// request, so fill them in before sending. Edit freely.
 const PRESETS = {
   recommendations: {
     label: 'Recommendations',
@@ -33,7 +32,15 @@ const PRESETS = {
   },
 }
 
-// Build the literal endpoint URL for a preset from the server's base URLs.
+// Public Hello Retail base URLs. Baked in so the app is fully static — the
+// browser calls these directly (CORS is open), no server/proxy required.
+const BASES = {
+  recommendations: 'https://core.helloretail.com/serve/recoms',
+  search: 'https://core.helloretail.com/serve/search',
+  pages: 'https://core.helloretail.com/serve/pages',
+}
+
+// Build the literal endpoint URL for a preset from the base URLs.
 function resolveUrl(presetKey, pagesKey, bases) {
   const p = PRESETS[presetKey]
   if (!p || !p.baseKey || !bases) return ''
@@ -87,6 +94,26 @@ function valueMatches(val, q) {
   return String(val).toLowerCase().includes(q)
 }
 
+// Palette for waterfall step grouping. Which color maps to which step doesn't
+// matter (steps differ per recommendation config) — only that each is distinct.
+const STEP_COLORS = [
+  '#6ea8fe', '#2ea043', '#d29922', '#bf5af2', '#ff6b6b',
+  '#3fb6c0', '#e06ec0', '#9aa84a', '#5a78ff', '#cf6679',
+]
+
+// Group an ordered tile list into contiguous runs by source step, so each
+// step's products render together under one header.
+function groupTilesByStep(tiles) {
+  const groups = []
+  for (const t of tiles) {
+    const key = t.source ? t.source.index : '_none'
+    const last = groups[groups.length - 1]
+    if (last && last.key === key) last.tiles.push(t)
+    else groups.push({ key, source: t.source || null, tiles: [t] })
+  }
+  return groups
+}
+
 function loadState() {
   let saved = {}
   try {
@@ -109,7 +136,6 @@ export default function App() {
 
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState('tiles')
-  const [serverCfg, setServerCfg] = useState(null)
 
   // Width of the config column, draggable via the gutter. Persisted across
   // sessions (a layout preference, not per-request data).
@@ -146,21 +172,14 @@ export default function App() {
     setSessions((s) => ({ ...s, [preset]: { ...s[preset], ...changes } }))
   }
 
-  useEffect(() => {
-    fetch('/api/config')
-      .then((r) => r.json())
-      .then(setServerCfg)
-      .catch(() => {})
-  }, [])
-
   // Keep the URL field showing the real resolved endpoint for standard presets.
-  // Re-resolves when the preset, page key, or server bases change. Custom is
-  // left alone so the user can type a free-form URL.
+  // Re-resolves when the preset or page key change. Custom is left alone so the
+  // user can type a free-form URL.
   useEffect(() => {
-    if (!serverCfg || preset === 'custom') return
-    patch({ url: resolveUrl(preset, cur.pagesKey, serverCfg.bases) })
+    if (preset === 'custom') return
+    patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, cur.pagesKey, serverCfg])
+  }, [preset, cur.pagesKey])
 
   // Persist each solution's data so it survives switching solutions, reloads,
   // and relaunching the app (localStorage = kept until explicitly cleared).
@@ -205,16 +224,37 @@ export default function App() {
       locked: false, // locked entries survive "clear all"
     }
     let entry
+    const started = performance.now()
     try {
-      const r = await fetch('/api/proxy', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ method: cur.method, url: cur.url, headers: parsedHeaders, body: cur.body }),
-      })
-      const data = await r.json()
-      entry = { ...snapshot, resp: data, error: data.error || null }
+      const init = { method: cur.method, headers: { ...parsedHeaders } }
+      if (cur.method !== 'GET' && cur.method !== 'HEAD' && cur.body && cur.body.trim() !== '') {
+        init.body = cur.body
+        if (!Object.keys(init.headers).some((h) => h.toLowerCase() === 'content-type')) {
+          init.headers['Content-Type'] = 'application/json'
+        }
+      }
+      const r = await fetch(cur.url, init)
+      const text = await r.text()
+      let json = null
+      try {
+        json = JSON.parse(text)
+      } catch {
+        json = null
+      }
+      const data = {
+        ok: r.ok,
+        status: r.status,
+        statusText: r.statusText,
+        durationMs: Math.round(performance.now() - started),
+        requestUrl: cur.url,
+        headers: Object.fromEntries(r.headers.entries()),
+        json,
+        text: json == null ? text : undefined,
+      }
+      entry = { ...snapshot, resp: data, error: null }
     } catch (e) {
-      entry = { ...snapshot, resp: null, error: String(e.message || e) }
+      // A thrown fetch is usually a network/CORS failure (no HTTP response).
+      entry = { ...snapshot, resp: null, error: `${e.message || e} (network/CORS error)` }
     }
     // Prepend to this solution's history and view the new entry.
     setSessions((s) => {
@@ -279,11 +319,20 @@ export default function App() {
   const displayError = cur.error || viewed?.error || null
 
   const payload = resp?.json
-  const { tiles, usedPath } = useMemo(
+  const { tiles, usedPath, steps } = useMemo(
     () => extractTiles(payload, cur.productsPath, cur.fieldMap),
     [payload, cur.productsPath, cur.fieldMap],
   )
   const arrayPaths = useMemo(() => (payload ? findArrayPaths(payload) : []), [payload])
+
+  // Group products by their countAfterSource waterfall step (Recommendations).
+  const [groupBySource, setGroupBySource] = useState(true)
+  // Assign each step a stable color from the palette (steps vary per config).
+  const stepColors = useMemo(() => {
+    const map = {}
+    steps.forEach((s, i) => { map[s.index] = STEP_COLORS[i % STEP_COLORS.length] })
+    return map
+  }, [steps])
 
   // Real-time results filter. Empty field = match any value in any field.
   const [filterText, setFilterText] = useState('')
@@ -312,11 +361,7 @@ export default function App() {
     <div className="app">
       <header className="topbar">
         <h1>Hello Retail · API Tester</h1>
-        <span className="hint">
-          {serverCfg
-            ? `env: ${serverCfg.definedEnv.join(', ') || 'none set'}`
-            : 'connecting to proxy…'}
-        </span>
+        <span className="hint">calls core.helloretail.com directly</span>
       </header>
 
       <div className="layout">
@@ -515,23 +560,59 @@ export default function App() {
                   {filterText && (
                     <button className="link" onClick={() => setFilterText('')}>clear</button>
                   )}
+                  {steps.length > 0 && (
+                    <label className="grouptoggle" title="Group products by countAfterSource step">
+                      <input
+                        type="checkbox"
+                        checked={groupBySource}
+                        onChange={(e) => setGroupBySource(e.target.checked)}
+                      />
+                      group by step
+                    </label>
+                  )}
                 </div>
               )}
-              <div className="grid">
-                {tiles.length === 0 && (
-                  <div className="empty">
-                    No products found. Open “Tile mapping” to set the array path / fields.
+
+              {tiles.length === 0 && (
+                <div className="empty">
+                  No products found. Open “Tile mapping” to set the array path / fields.
+                </div>
+              )}
+              {tiles.length > 0 && filteredTiles.length === 0 && (
+                <div className="empty">
+                  No products match “{filterText}”{filterField ? ` in ${filterField}` : ''}.
+                </div>
+              )}
+
+              {steps.length > 0 && groupBySource ? (
+                <div className="stepgroups">
+                  {groupTilesByStep(filteredTiles).map((g, gi) => {
+                    const color = g.source ? stepColors[g.source.index] : 'var(--border)'
+                    return (
+                      <div key={`${g.key}-${gi}`} className="stepgroup" style={{ borderColor: color }}>
+                        <div className="stephead" style={{ background: color }}>
+                          {g.source
+                            ? `Step ${g.source.index}: ${g.source.source} · ${g.source.ms}ms · ${g.tiles.length}`
+                            : `Unattributed · ${g.tiles.length}`}
+                        </div>
+                        <div className="stepbody">
+                          {g.tiles.map((t, i) => (
+                            <Tile key={t.id ?? `${gi}-${i}`} t={t} />
+                          ))}
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                filteredTiles.length > 0 && (
+                  <div className="grid">
+                    {filteredTiles.map((t, i) => (
+                      <Tile key={t.id ?? i} t={t} />
+                    ))}
                   </div>
-                )}
-                {tiles.length > 0 && filteredTiles.length === 0 && (
-                  <div className="empty">
-                    No products match “{filterText}”{filterField ? ` in ${filterField}` : ''}.
-                  </div>
-                )}
-                {filteredTiles.map((t, i) => (
-                  <Tile key={t.id ?? i} t={t} />
-                ))}
-              </div>
+                )
+              )}
             </>
           )}
 

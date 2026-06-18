@@ -1,28 +1,35 @@
 # Hello Retail API Tester
 
-Local tool to fire requests at the Hello Retail **Recommendations**, **Search**, and **Pages** APIs and render the returned products as visual tiles.
+Tool to fire requests at the Hello Retail **Recommendations**, **Search**, and **Pages** APIs and render the returned products as visual tiles.
+
+**Hosted:** https://xxxhrpatrickxxx.github.io/hr-api-tester/ — always available, nothing to install. Every push to `main` auto-deploys via GitHub Actions.
 
 ## How it works
 
 - **client/** — Vite + React UI. Pick an API preset (or Custom), choose a method, edit the JSON body, hit **Send**. Results show as product tiles plus raw JSON / response headers.
-- **server/** — small Express proxy on `:8787`. It forwards your request to Hello Retail (avoiding browser CORS) and substitutes `${VAR}` tokens in the URL/headers/body with values from `server/.env`, so API keys never live in the browser.
+- The browser calls `core.helloretail.com` **directly** (the HR serve endpoints allow cross-origin requests), so the app is fully static and needs no server. Base URLs are baked into the client; the API key and `websiteUuid` are entered per request.
+- **server/** — an optional Express server (`:8787`) for running the whole thing locally as one process. It serves the built client and includes a `/api/proxy` forwarder, but the deployed site does not use it.
 
-## Setup
+## Run locally
 
 ```sh
 npm install
-cp server/.env.example server/.env   # then fill in your keys / base URLs
-npm run dev
+npm run dev      # Vite dev server with hot reload
 ```
 
-Open http://localhost:5173.
+Or run the built app from the single Node server (or use `start-hr-api-tester.cmd`):
+
+```sh
+npm run serve    # build, then serve at http://localhost:8787
+```
 
 ## Credentials
 
-The API key and `websiteUuid` vary per request, so they are **not** stored in `.env` — enter them directly in the request (headers / JSON body) in the UI.
+The API key and `websiteUuid` vary per request, so they are **not** stored anywhere — enter them directly in the request (headers / JSON body) in the UI. Nothing sensitive is built into the deployed site.
 
-`server/.env` holds only the per-API base URLs (`HR_RECOMMENDATIONS_BASE`, `HR_SEARCH_BASE`, `HR_PAGES_BASE`), which auto-populate the presets. You can still reference any `.env` value in a request as `${VAR_NAME}` — the proxy swaps it in server-side.
+## Features
 
-## Tile mapping
-
-The UI auto-detects the largest array of objects in the response and maps common field names (title/image/price/url). If your response uses different keys, open **Tile mapping** to set the array path and field names — it suggests detected array paths as clickable chips.
+- **Per-solution sessions & history** — each API keeps its own request form, page key, and a history of past requests/responses (persisted in `localStorage`). Lock entries to protect them from "clear all".
+- **Real-time filtering** — filter products by any field, or a specific field.
+- **Recommendations step grouping** — products are grouped by their `countAfterSource` waterfall step, each boxed with a colored header.
+- **Tile mapping** — auto-detects the product array and maps the standard fields (`title`, `imgUrl`, `productNumber`, `price`, `oldPrice`, `url`); override under **Tile mapping** for non-standard responses.

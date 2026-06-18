@@ -5,6 +5,9 @@ import react from '@vitejs/plugin-react'
 // server (which holds the credentials and forwards to Hello Retail).
 export default defineConfig({
   root: 'client',
+  // Relative base so the built site works both at the GitHub Pages subpath
+  // (/hr-api-tester/) and when served locally from the root.
+  base: './',
   plugins: [react()],
   server: {
     port: 5173,

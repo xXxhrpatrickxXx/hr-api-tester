@@ -86,8 +86,42 @@ export function toTile(item, fieldMap = DEFAULT_FIELD_MAP) {
   }
 }
 
+// The object that directly contains the array at `path` (i.e. its parent), so
+// we can read siblings like Recommendations' `countAfterSource`.
+function parentOf(obj, path) {
+  const parts = path
+    .replace(/\[(\d+)\]/g, '.$1')
+    .split('.')
+    .filter(Boolean)
+  parts.pop()
+  let cur = obj
+  for (const p of parts) {
+    if (cur == null) return undefined
+    cur = cur[p]
+  }
+  return cur
+}
+
+// Parse a Recommendations `countAfterSource` string into ordered steps. Format:
+//   "0. FIXED (0ms): 0; 1. RECENTLY_CREATED (36ms): 0; 3. RECENTLY_CREATED (3ms): 2; …"
+// where each ": N" is the number of products that step contributed (per step,
+// not cumulative). Steps that contributed 0 products are dropped.
+export function parseCountAfterSource(str) {
+  if (typeof str !== 'string' || !str.trim()) return []
+  return str
+    .split(';')
+    .map((seg) => seg.trim())
+    .filter(Boolean)
+    .map((seg) => {
+      const m = seg.match(/^(\d+)\.\s*(.+?)\s*\((\d+)ms\)\s*:\s*(\d+)$/)
+      if (!m) return null
+      return { index: Number(m[1]), source: m[2], ms: Number(m[3]), count: Number(m[4]) }
+    })
+    .filter(Boolean)
+}
+
 export function extractTiles(response, productsPath, fieldMap) {
-  if (!response) return { tiles: [], usedPath: '' }
+  if (!response) return { tiles: [], usedPath: '', steps: [] }
   let usedPath = productsPath
   let arr = productsPath ? getPath(response, productsPath) : undefined
   if (!Array.isArray(arr)) {
@@ -104,9 +138,22 @@ export function extractTiles(response, productsPath, fieldMap) {
       arr = getPath(response, chosen.path)
     }
   }
-  if (!Array.isArray(arr)) return { tiles: [], usedPath: '' }
-  return {
-    tiles: arr.filter((x) => x && typeof x === 'object').map((x) => toTile(x, fieldMap)),
-    usedPath,
+  if (!Array.isArray(arr)) return { tiles: [], usedPath: '', steps: [] }
+
+  const tiles = arr.filter((x) => x && typeof x === 'object').map((x) => toTile(x, fieldMap))
+
+  // Recommendations: attribute each product to the waterfall step that found
+  // it, by walking the per-step counts in order. Steps live on the parent of
+  // the products array (e.g. responses[0].countAfterSource).
+  const steps = parseCountAfterSource(parentOf(response, usedPath)?.countAfterSource)
+  if (steps.length) {
+    let i = 0
+    for (const step of steps) {
+      for (let n = 0; n < step.count && i < tiles.length; n++, i++) {
+        tiles[i].source = step
+      }
+    }
   }
+
+  return { tiles, usedPath, steps }
 }
