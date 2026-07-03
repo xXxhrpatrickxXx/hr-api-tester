@@ -58,13 +58,27 @@ export const DEFAULT_FIELD_MAP = {
   id: 'productNumber',
 }
 
-// Keys that mark an array as the Hello Retail product list, so auto-detection
-// can pick it out regardless of where it sits in the response
-// (responses[].products / products.results / products.result).
+// Keys that mark an array item as a Hello Retail product.
 const PRODUCT_KEYS = ['title', 'imgUrl', 'productNumber', 'price', 'oldPrice', 'url']
 
 function looksLikeProduct(item) {
   return item && typeof item === 'object' && PRODUCT_KEYS.some((k) => k in item)
+}
+
+// The array holding products always sits under one of these keys across all HR
+// APIs: responses[].products, products.results, products.result,
+// result[boxId].result (legacy recoms), results (legacy search).
+const PRODUCT_ARRAY_KEYS = ['products', 'results', 'result']
+// Arrays under these keys are never products (facets/sort options) — a filters
+// array can be longer than the product list and otherwise get mis-detected.
+const NON_PRODUCT_ARRAY_KEYS = ['filters', 'sorting', 'facets']
+
+// Last object key in a path, ignoring a trailing array index.
+// "products.results" -> "results", "responses[0].products" -> "products".
+function lastKey(path) {
+  const noIndex = path.replace(/\[\d+\]$/, '')
+  const dot = noIndex.lastIndexOf('.')
+  return dot === -1 ? noIndex : noIndex.slice(dot + 1)
 }
 
 function splitKeys(spec) {
@@ -125,14 +139,23 @@ export function extractTiles(response, productsPath, fieldMap) {
   let usedPath = productsPath
   let arr = productsPath ? getPath(response, productsPath) : undefined
   if (!Array.isArray(arr)) {
-    const candidates = findArrayPaths(response)
-    // Prefer the array whose items look like HR products; fall back to the
-    // longest array of objects.
-    const product = candidates.find((c) => {
+    // Candidates are arrays of objects, longest first. Never treat filters/
+    // sorting as products, even when longer than the product list.
+    const candidates = findArrayPaths(response).filter(
+      (c) => !NON_PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)),
+    )
+    const productLike = (c) => {
       const a = getPath(response, c.path)
       return Array.isArray(a) && a.some(looksLikeProduct)
-    })
-    const chosen = product || candidates[0]
+    }
+    const inProductKey = (c) => PRODUCT_ARRAY_KEYS.includes(lastKey(c.path))
+    // Prefer a known product container that also looks like products, then any
+    // known product container, then anything product-like, then longest.
+    const chosen =
+      candidates.find((c) => inProductKey(c) && productLike(c)) ||
+      candidates.find(inProductKey) ||
+      candidates.find(productLike) ||
+      candidates[0]
     if (chosen) {
       usedPath = chosen.path
       arr = getPath(response, chosen.path)

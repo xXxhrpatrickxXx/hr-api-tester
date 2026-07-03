@@ -24,6 +24,22 @@ const PRESETS = {
     needsKey: true, // a unique page key is appended to the endpoint
     body: JSON.stringify({ websiteUuid: '', url: '', size: 24 }, null, 2),
   },
+  // Legacy APIs are GET with query-string params (no JSON body). The URL is
+  // prefilled with a param template to edit in place.
+  legacyRecoms: {
+    label: 'Recoms (legacy)',
+    method: 'GET',
+    baseKey: 'legacyRecoms',
+    query: 'format=json&ids=&trackingUserId=&url=',
+    body: '',
+  },
+  legacySearch: {
+    label: 'Search (legacy)',
+    method: 'GET',
+    baseKey: 'legacySearch',
+    query: 'format=json&key=&q=&product_count=24&product_start=0',
+    body: '',
+  },
   custom: {
     label: 'Custom',
     method: 'GET',
@@ -38,6 +54,8 @@ const BASES = {
   recommendations: 'https://core.helloretail.com/serve/recoms',
   search: 'https://core.helloretail.com/serve/search',
   pages: 'https://core.helloretail.com/serve/pages',
+  legacyRecoms: 'https://core.helloretail.com/api/v1/product-recommendation/getProductBoxes',
+  legacySearch: 'https://core.helloretail.com/api/v1/search/partnerSearch',
 }
 
 // Build the literal endpoint URL for a preset from the base URLs.
@@ -47,6 +65,7 @@ function resolveUrl(presetKey, pagesKey, bases) {
   const base = bases[p.baseKey] || ''
   if (!base) return ''
   if (p.needsKey) return `${base.replace(/\/+$/, '')}/${pagesKey || ''}`
+  if (p.query) return `${base}?${p.query}`
   return base
 }
 
@@ -172,12 +191,16 @@ export default function App() {
     setSessions((s) => ({ ...s, [preset]: { ...s[preset], ...changes } }))
   }
 
-  // Keep the URL field showing the real resolved endpoint for standard presets.
-  // Re-resolves when the preset or page key change. Custom is left alone so the
-  // user can type a free-form URL.
+  // Keep the URL field showing the real resolved endpoint. Pages tracks the
+  // page key live; other presets are populated once (so edited legacy query
+  // params aren't clobbered when switching solutions). Custom is left alone.
   useEffect(() => {
     if (preset === 'custom') return
-    patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
+    if (PRESETS[preset].needsKey) {
+      patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
+    } else if (!cur.url) {
+      patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
+    }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, cur.pagesKey])
 
