@@ -169,14 +169,48 @@ export function extractTiles(response, productsPath, fieldMap) {
   // it, by walking the per-step counts in order. Steps live on the parent of
   // the products array (e.g. responses[0].countAfterSource).
   const steps = parseCountAfterSource(parentOf(response, usedPath)?.countAfterSource)
-  if (steps.length) {
-    let i = 0
-    for (const step of steps) {
-      for (let n = 0; n < step.count && i < tiles.length; n++, i++) {
-        tiles[i].source = step
-      }
-    }
-  }
+  assignSteps(tiles, steps)
 
   return { tiles, usedPath, steps }
+}
+
+// Tag each tile with the waterfall step that produced it (in order, per count).
+function assignSteps(tiles, steps) {
+  if (!steps.length) return
+  let i = 0
+  for (const step of steps) {
+    for (let n = 0; n < step.count && i < tiles.length; n++, i++) {
+      tiles[i].source = step
+    }
+  }
+}
+
+// Extract products grouped into "boxes". Recommendations can request several
+// boxes at once, returning responses[] where each entry is its own box with its
+// own products + countAfterSource — each becomes a box. Everything else is a
+// single box. Returns { boxes: [{ key, tiles, steps }], usedPath }.
+export function extractResult(response, productsPath, fieldMap) {
+  if (!response) return { boxes: [], usedPath: '' }
+
+  // Multi-box recoms: only when auto-detecting (no manual path override).
+  if (
+    !productsPath &&
+    Array.isArray(response.responses) &&
+    response.responses.some((r) => r && Array.isArray(r.products))
+  ) {
+    const boxes = response.responses
+      .filter((r) => r && Array.isArray(r.products))
+      .map((r, i) => {
+        const tiles = r.products
+          .filter((x) => x && typeof x === 'object')
+          .map((x) => toTile(x, fieldMap))
+        const steps = parseCountAfterSource(r.countAfterSource)
+        assignSteps(tiles, steps)
+        return { key: r.key || r.trackingKey || `Box ${i + 1}`, tiles, steps }
+      })
+    return { boxes, usedPath: 'responses[].products' }
+  }
+
+  const { tiles, usedPath, steps } = extractTiles(response, productsPath, fieldMap)
+  return { boxes: [{ key: null, tiles, steps }], usedPath }
 }

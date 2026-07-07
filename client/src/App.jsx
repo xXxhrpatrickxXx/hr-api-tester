@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { extractTiles, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
+import { extractResult, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
 
 // Request templates per API. The endpoint is resolved client-side from BASES
 // so the URL field shows the real value. The websiteUuid / API key vary per
@@ -342,20 +342,19 @@ export default function App() {
   const displayError = cur.error || viewed?.error || null
 
   const payload = resp?.json
-  const { tiles, usedPath, steps } = useMemo(
-    () => extractTiles(payload, cur.productsPath, cur.fieldMap),
+  // Products come back as one or more "boxes" (recoms can request several at
+  // once — each responses[] entry is its own box with its own step waterfall).
+  const { boxes, usedPath } = useMemo(
+    () => extractResult(payload, cur.productsPath, cur.fieldMap),
     [payload, cur.productsPath, cur.fieldMap],
   )
   const arrayPaths = useMemo(() => (payload ? findArrayPaths(payload) : []), [payload])
 
+  const allTiles = useMemo(() => boxes.flatMap((b) => b.tiles), [boxes])
+  const anySteps = boxes.some((b) => b.steps.length > 0)
+
   // Group products by their countAfterSource waterfall step (Recommendations).
   const [groupBySource, setGroupBySource] = useState(true)
-  // Assign each step a stable color from the palette (steps vary per config).
-  const stepColors = useMemo(() => {
-    const map = {}
-    steps.forEach((s, i) => { map[s.index] = STEP_COLORS[i % STEP_COLORS.length] })
-    return map
-  }, [steps])
 
   // Real-time results filter. Empty field = match any value in any field.
   const [filterText, setFilterText] = useState('')
@@ -364,21 +363,24 @@ export default function App() {
   // Field names present on the current products, for the field selector.
   const filterFields = useMemo(() => {
     const set = new Set()
-    for (const t of tiles) {
+    for (const t of allTiles) {
       if (t.raw && typeof t.raw === 'object') {
         for (const k of Object.keys(t.raw)) set.add(k)
       }
     }
     return Array.from(set)
-  }, [tiles])
+  }, [allTiles])
 
-  const filteredTiles = useMemo(() => {
+  // Filter each box's tiles independently, keeping box structure.
+  const filteredBoxes = useMemo(() => {
     const q = filterText.trim().toLowerCase()
-    if (!q) return tiles
-    return tiles.filter((t) =>
-      filterField ? valueMatches(t.raw?.[filterField], q) : valueMatches(t.raw, q),
-    )
-  }, [tiles, filterText, filterField])
+    if (!q) return boxes
+    const match = (t) => (filterField ? valueMatches(t.raw?.[filterField], q) : valueMatches(t.raw, q))
+    return boxes.map((b) => ({ ...b, tiles: b.tiles.filter(match) }))
+  }, [boxes, filterText, filterField])
+
+  const totalTiles = allTiles.length
+  const shownTiles = filteredBoxes.reduce((n, b) => n + b.tiles.length, 0)
 
   return (
     <div className="app">
@@ -537,7 +539,8 @@ export default function App() {
                 <span className="hint">{resp.durationMs} ms</span>
                 {usedPath !== undefined && payload && (
                   <span className="hint">
-                    {filterText.trim() ? `${filteredTiles.length} / ${tiles.length}` : tiles.length} tiles
+                    {filterText.trim() ? `${shownTiles} / ${totalTiles}` : totalTiles} tiles
+                    {boxes.length > 1 ? ` · ${boxes.length} boxes` : ''}
                     {usedPath ? ` from "${usedPath}"` : ''}
                   </span>
                 )}
@@ -561,7 +564,7 @@ export default function App() {
 
           {tab === 'tiles' && resp && (
             <>
-              {tiles.length > 0 && (
+              {totalTiles > 0 && (
                 <div className="row filterbar">
                   <input
                     className="url"
@@ -583,7 +586,7 @@ export default function App() {
                   {filterText && (
                     <button className="link" onClick={() => setFilterText('')}>clear</button>
                   )}
-                  {steps.length > 0 && (
+                  {anySteps && (
                     <label className="grouptoggle" title="Group products by countAfterSource step">
                       <input
                         type="checkbox"
@@ -596,45 +599,29 @@ export default function App() {
                 </div>
               )}
 
-              {tiles.length === 0 && (
+              {totalTiles === 0 && (
                 <div className="empty">
                   No products found. Open “Tile mapping” to set the array path / fields.
                 </div>
               )}
-              {tiles.length > 0 && filteredTiles.length === 0 && (
+              {totalTiles > 0 && shownTiles === 0 && (
                 <div className="empty">
                   No products match “{filterText}”{filterField ? ` in ${filterField}` : ''}.
                 </div>
               )}
 
-              {steps.length > 0 && groupBySource ? (
-                <div className="stepgroups">
-                  {groupTilesByStep(filteredTiles).map((g, gi) => {
-                    const color = g.source ? stepColors[g.source.index] : 'var(--border)'
-                    return (
-                      <div key={`${g.key}-${gi}`} className="stepgroup" style={{ borderColor: color }}>
-                        <div className="stephead" style={{ background: color }}>
-                          {g.source
-                            ? `Step ${g.source.index}: ${g.source.source} · ${g.source.ms}ms · ${g.tiles.length}`
-                            : `Unattributed · ${g.tiles.length}`}
-                        </div>
-                        <div className="stepbody">
-                          {g.tiles.map((t, i) => (
-                            <Tile key={t.id ?? `${gi}-${i}`} t={t} />
-                          ))}
-                        </div>
-                      </div>
-                    )
-                  })}
-                </div>
-              ) : (
-                filteredTiles.length > 0 && (
-                  <div className="grid">
-                    {filteredTiles.map((t, i) => (
-                      <Tile key={t.id ?? i} t={t} />
-                    ))}
+              {filteredBoxes.map((box, bi) =>
+                box.tiles.length === 0 ? null : box.key ? (
+                  // Multiple recommendation boxes: label each one.
+                  <div className="box" key={box.key}>
+                    <div className="boxhead">
+                      Box: {box.key} · {box.tiles.length}
+                    </div>
+                    <TileGroups tiles={box.tiles} steps={box.steps} grouped={groupBySource} />
                   </div>
-                )
+                ) : (
+                  <TileGroups key={bi} tiles={box.tiles} steps={box.steps} grouped={groupBySource} />
+                ),
               )}
             </>
           )}
@@ -648,6 +635,49 @@ export default function App() {
           )}
         </section>
       </div>
+    </div>
+  )
+}
+
+// Assign each step a stable color from the palette (steps vary per config).
+function stepColorMap(steps) {
+  const map = {}
+  steps.forEach((s, i) => { map[s.index] = STEP_COLORS[i % STEP_COLORS.length] })
+  return map
+}
+
+// Render a box's tiles: grouped by countAfterSource step (bordered/colored) when
+// step data exists and grouping is on, otherwise a plain grid.
+function TileGroups({ tiles, steps, grouped }) {
+  if (grouped && steps.length > 0) {
+    const colors = stepColorMap(steps)
+    return (
+      <div className="stepgroups">
+        {groupTilesByStep(tiles).map((g, gi) => {
+          const color = g.source ? colors[g.source.index] : 'var(--border)'
+          return (
+            <div key={`${g.key}-${gi}`} className="stepgroup" style={{ borderColor: color }}>
+              <div className="stephead" style={{ background: color }}>
+                {g.source
+                  ? `Step ${g.source.index}: ${g.source.source} · ${g.source.ms}ms · ${g.tiles.length}`
+                  : `Unattributed · ${g.tiles.length}`}
+              </div>
+              <div className="stepbody">
+                {g.tiles.map((t, i) => (
+                  <Tile key={t.id ?? `${gi}-${i}`} t={t} />
+                ))}
+              </div>
+            </div>
+          )
+        })}
+      </div>
+    )
+  }
+  return (
+    <div className="grid">
+      {tiles.map((t, i) => (
+        <Tile key={t.id ?? i} t={t} />
+      ))}
     </div>
   )
 }
