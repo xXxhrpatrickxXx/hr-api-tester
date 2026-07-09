@@ -166,6 +166,16 @@ export default function App() {
     localStorage.setItem('hr-api-tester:leftWidth', String(leftWidth))
   }, [leftWidth])
 
+  // Height of the JSON body textarea, set by dragging its resize handle.
+  // Persisted so it survives reloads and solution switches.
+  const [bodyHeight, setBodyHeight] = useState(() => {
+    const h = Number(localStorage.getItem('hr-api-tester:bodyHeight'))
+    return h >= 120 && h <= 2000 ? h : 260
+  })
+  useEffect(() => {
+    localStorage.setItem('hr-api-tester:bodyHeight', String(bodyHeight))
+  }, [bodyHeight])
+
   function startResize(e) {
     e.preventDefault()
     const startX = e.clientX
@@ -441,7 +451,12 @@ export default function App() {
             value={cur.body}
             spellCheck={false}
             onChange={(e) => patch({ body: e.target.value })}
-            rows={12}
+            style={{ height: bodyHeight }}
+            onMouseUp={(e) => {
+              // Persist the height after a drag on the resize handle.
+              const h = e.currentTarget.offsetHeight
+              if (h !== bodyHeight) setBodyHeight(h)
+            }}
           />
 
           <details>
