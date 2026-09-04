@@ -744,6 +744,11 @@ const Tile = memo(function Tile({ t }) {
   return (
     <div className="tile">
       <div className="thumb">
+        {/* Position in the response, so filtered views still show the original
+            ordering (e.g. #1, #5, #18, #72). */}
+        {t.pos != null && (
+          <span className="pos" title={`Product #${t.pos} in the response`}>#{t.pos}</span>
+        )}
         {t.image ? (
           <img src={t.image} alt={t.title || ''} loading="lazy" />
         ) : (

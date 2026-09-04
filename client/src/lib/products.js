@@ -163,7 +163,11 @@ export function extractTiles(response, productsPath, fieldMap) {
   }
   if (!Array.isArray(arr)) return { tiles: [], usedPath: '', steps: [] }
 
-  const tiles = arr.filter((x) => x && typeof x === 'object').map((x) => toTile(x, fieldMap))
+  // `pos` is the product's 1-based position in the response, fixed here before
+  // any filtering, so a filtered view still shows original positions.
+  const tiles = arr
+    .filter((x) => x && typeof x === 'object')
+    .map((x, i) => ({ ...toTile(x, fieldMap), pos: i + 1 }))
 
   // Recommendations: attribute each product to the waterfall step that found
   // it, by walking the per-step counts in order. Steps live on the parent of
@@ -203,7 +207,7 @@ export function extractResult(response, productsPath, fieldMap) {
       .map((r, i) => {
         const tiles = r.products
           .filter((x) => x && typeof x === 'object')
-          .map((x) => toTile(x, fieldMap))
+          .map((x, n) => ({ ...toTile(x, fieldMap), pos: n + 1 }))
         const steps = parseCountAfterSource(r.countAfterSource)
         assignSteps(tiles, steps)
         return { key: r.key || r.trackingKey || `Box ${i + 1}`, tiles, steps }
