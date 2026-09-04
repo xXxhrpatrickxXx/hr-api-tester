@@ -167,15 +167,24 @@ export default function App() {
     localStorage.setItem('hr-api-tester:leftWidth', String(leftWidth))
   }, [leftWidth])
 
-  // Height of the JSON body textarea, set by dragging its resize handle.
-  // Persisted so it survives reloads and solution switches.
-  const [bodyHeight, setBodyHeight] = useState(() => {
+  // Size of the JSON body textarea, set by dragging its resize handle (both
+  // directions). Persisted so it survives reloads and solution switches.
+  // width null = fall back to the CSS 100% of the config column.
+  const [bodySize, setBodySize] = useState(() => {
     const h = Number(localStorage.getItem('hr-api-tester:bodyHeight'))
-    return h >= 120 && h <= 2000 ? h : 260
+    const w = Number(localStorage.getItem('hr-api-tester:bodyWidth'))
+    return {
+      height: h >= 90 && h <= 4000 ? h : 260,
+      width: w >= 200 && w <= 4000 ? w : null,
+    }
   })
+  // Dimensions at mousedown, to tell a horizontal drag from a plain click.
+  const dragStart = useRef(null)
   useEffect(() => {
-    localStorage.setItem('hr-api-tester:bodyHeight', String(bodyHeight))
-  }, [bodyHeight])
+    localStorage.setItem('hr-api-tester:bodyHeight', String(bodySize.height))
+    if (bodySize.width) localStorage.setItem('hr-api-tester:bodyWidth', String(bodySize.width))
+    else localStorage.removeItem('hr-api-tester:bodyWidth')
+  }, [bodySize])
 
   function startResize(e) {
     e.preventDefault()
@@ -468,11 +477,24 @@ export default function App() {
             value={cur.body}
             spellCheck={false}
             onChange={(e) => patch({ body: e.target.value })}
-            style={{ height: bodyHeight }}
+            style={{ height: bodySize.height, ...(bodySize.width ? { width: bodySize.width } : null) }}
+            onMouseDown={(e) => {
+              const el = e.currentTarget
+              dragStart.current = { w: el.offsetWidth, h: el.offsetHeight }
+            }}
             onMouseUp={(e) => {
-              // Persist the height after a drag on the resize handle.
-              const h = e.currentTarget.offsetHeight
-              if (h !== bodyHeight) setBodyHeight(h)
+              // Persist the size after a drag on the resize handle. The width is
+              // only pinned if actually dragged horizontally, so otherwise the
+              // editor keeps flexing with the config column.
+              const el = e.currentTarget
+              const start = dragStart.current
+              if (!start) return
+              dragStart.current = null
+              const height = el.offsetHeight
+              const width = el.offsetWidth !== start.w ? el.offsetWidth : bodySize.width
+              if (height !== bodySize.height || width !== bodySize.width) {
+                setBodySize({ height, width })
+              }
             }}
           />
 
