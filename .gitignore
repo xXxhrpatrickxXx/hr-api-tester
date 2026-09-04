@@ -6,3 +6,6 @@ dist
 
 # Local Claude Code settings (personal, machine-specific)
 .claude/settings.local.json
+
+# Playwright/QA scratch output
+QA/

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { extractResult, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
 
 // Request templates per API. The endpoint is resolved client-side from BASES
@@ -148,9 +148,10 @@ function loadState() {
 }
 
 export default function App() {
-  const initial = loadState()
-  const [preset, setPreset] = useState(initial.preset)
-  const [sessions, setSessions] = useState(initial.sessions)
+  // Lazy initialisers: loadState() parses the whole persisted store, so it must
+  // run once on mount — not on every render.
+  const [preset, setPreset] = useState(() => loadState().preset)
+  const [sessions, setSessions] = useState(() => loadState().sessions)
   const cur = sessions[preset]
 
   const [loading, setLoading] = useState(false)
@@ -216,13 +217,29 @@ export default function App() {
 
   // Persist each solution's data so it survives switching solutions, reloads,
   // and relaunching the app (localStorage = kept until explicitly cleared).
-  useEffect(() => {
+  // Debounced: this fires on every keystroke, and serializing the whole store
+  // (history holds full API responses) is expensive to do synchronously.
+  const stateRef = useRef({ preset, sessions })
+  stateRef.current = { preset, sessions }
+
+  const persist = useCallback(() => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ preset, sessions }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateRef.current))
     } catch {
       // localStorage may reject very large responses — ignore.
     }
-  }, [preset, sessions])
+  }, [])
+
+  useEffect(() => {
+    const t = setTimeout(persist, 400)
+    return () => clearTimeout(t)
+  }, [preset, sessions, persist])
+
+  // Flush immediately if the tab closes mid-debounce, so the last edits survive.
+  useEffect(() => {
+    window.addEventListener('pagehide', persist)
+    return () => window.removeEventListener('pagehide', persist)
+  }, [persist])
 
   function formatBody() {
     try {
@@ -697,7 +714,10 @@ function TileGroups({ tiles, steps, grouped }) {
   )
 }
 
-function Tile({ t }) {
+// Memoized: any App state change (typing, filtering, resizing) re-renders the
+// whole tree, and a response can hold hundreds of tiles. Tile props are stable
+// object refs, so this skips nearly all of that reconciliation.
+const Tile = memo(function Tile({ t }) {
   const [open, setOpen] = useState(false)
   return (
     <div className="tile">
@@ -726,4 +746,4 @@ function Tile({ t }) {
       </div>
     </div>
   )
-}
+})
