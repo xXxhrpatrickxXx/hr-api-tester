@@ -660,6 +660,7 @@ export default function App() {
             ))}
           </div>
 
+          <div className="results-body">
           {displayError && <div className="error">{displayError}</div>}
 
           {!resp && !displayError && <div className="empty">Send a request to see results.</div>}
@@ -735,6 +736,7 @@ export default function App() {
           {tab === 'headers' && resp && (
             <pre className="code view">{JSON.stringify(resp.headers, null, 2)}</pre>
           )}
+          </div>
         </section>
       </div>
     </div>
