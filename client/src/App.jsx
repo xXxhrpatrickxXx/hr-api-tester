@@ -70,7 +70,8 @@ function resolveUrl(presetKey, pagesKey, bases) {
 }
 
 const STORAGE_KEY = 'hr-api-tester:v3'
-const MAX_HISTORY = 20 // per solution; bounds sessionStorage size
+const MAX_HISTORY = 20 // per solution; bounds the persisted store's size
+const REQUEST_TIMEOUT_MS = 30000
 
 // Each preset (solution) keeps its own keys, body, settings, and a history of
 // past requests/responses so switching solutions never loses your work and you
@@ -92,7 +93,14 @@ function blankSession(presetKey) {
 }
 
 // Short label for a history entry, pulled from the request body when possible.
+// Computed once when the request is sent and stored on the entry (older
+// entries fall back to computing it on read).
 function entrySummary(entry) {
+  if (entry.summary != null) return entry.summary
+  return buildSummary(entry)
+}
+
+function buildSummary(entry) {
   try {
     const b = JSON.parse(entry.body || '{}')
     if (b.query) return `“${b.query}”`
@@ -105,8 +113,9 @@ function entrySummary(entry) {
   return entry.method
 }
 
-// Case-insensitive substring match against a value, recursing into nested
-// objects/arrays so "any field" filtering also reaches nested data.
+// Case-insensitive substring match against one field's value, recursing into
+// nested objects/arrays. "Any field" uses the tile's precomputed haystack
+// instead, so it doesn't re-walk every product on each keystroke.
 function valueMatches(val, q) {
   if (val == null) return false
   if (typeof val === 'object') return Object.values(val).some((v) => valueMatches(v, q))
@@ -199,6 +208,9 @@ export default function App() {
     localStorage.removeItem('hr-api-tester:bodyWidth')
   }, [bodyHeight])
 
+  // In-flight request, so it can be cancelled (or timed out).
+  const abortRef = useRef(null)
+
   // Dragging the editor's corner sideways widens the config column instead of
   // the editor itself: the column grows to fit, then the editor snaps back to
   // filling it. Capped at the column's own maximum.
@@ -263,13 +275,21 @@ export default function App() {
   // Debounced: this fires on every keystroke, and serializing the whole store
   // (history holds full API responses) is expensive to do synchronously.
   const stateRef = useRef({ preset, sessions })
-  stateRef.current = { preset, sessions }
+  // Assigned in an effect, not during render: renders can be discarded or
+  // repeated, so they must stay free of side effects.
+  useEffect(() => {
+    stateRef.current = { preset, sessions }
+  }, [preset, sessions])
 
+  // Set when the store no longer fits, so it isn't a silent failure.
+  const [storageFull, setStorageFull] = useState(false)
   const persist = useCallback(() => {
     try {
       localStorage.setItem(STORAGE_KEY, JSON.stringify(stateRef.current))
+      setStorageFull(false)
     } catch {
-      // localStorage may reject very large responses — ignore.
+      // Out of quota (history holds full responses). Keep running, but say so.
+      setStorageFull(true)
     }
   }, [])
 
@@ -316,10 +336,14 @@ export default function App() {
       headers: cur.headers,
       locked: false, // locked entries survive "clear all"
     }
+    snapshot.summary = buildSummary(snapshot)
     let entry
     const started = performance.now()
+    const controller = new AbortController()
+    abortRef.current = controller
+    const timeout = setTimeout(() => controller.abort('timeout'), REQUEST_TIMEOUT_MS)
     try {
-      const init = { method: cur.method, headers: { ...parsedHeaders } }
+      const init = { method: cur.method, headers: { ...parsedHeaders }, signal: controller.signal }
       if (cur.method !== 'GET' && cur.method !== 'HEAD' && cur.body && cur.body.trim() !== '') {
         init.body = cur.body
         if (!Object.keys(init.headers).some((h) => h.toLowerCase() === 'content-type')) {
@@ -346,8 +370,17 @@ export default function App() {
       }
       entry = { ...snapshot, resp: data, error: null }
     } catch (e) {
-      // A thrown fetch is usually a network/CORS failure (no HTTP response).
-      entry = { ...snapshot, resp: null, error: `${e.message || e} (network/CORS error)` }
+      const aborted = controller.signal.aborted
+      const reason =
+        aborted && controller.signal.reason === 'timeout'
+          ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
+          : aborted
+            ? 'Cancelled'
+            : `${e.message || e} (network/CORS error)`
+      entry = { ...snapshot, resp: null, error: reason }
+    } finally {
+      clearTimeout(timeout)
+      abortRef.current = null
     }
     // Prepend to this solution's history and view the new entry.
     setSessions((s) => {
@@ -419,10 +452,16 @@ export default function App() {
     () => extractResult(payload, cur.productsPath, cur.fieldMap),
     [payload, cur.productsPath, cur.fieldMap],
   )
-  const arrayPaths = useMemo(() => (payload ? findArrayPaths(payload) : []), [payload])
-
   const allTiles = useMemo(() => boxes.flatMap((b) => b.tiles), [boxes])
-  const anySteps = boxes.some((b) => b.steps.length > 0)
+  const anySteps = useMemo(() => boxes.some((b) => b.steps.length > 0), [boxes])
+  const stepColors = useMemo(() => stepColorMap(boxes), [boxes])
+
+  // Only walked when the Tile mapping panel is actually open.
+  const [mappingOpen, setMappingOpen] = useState(false)
+  const arrayPaths = useMemo(
+    () => (mappingOpen && payload ? findArrayPaths(payload) : []),
+    [mappingOpen, payload],
+  )
 
   // Group products by their countAfterSource waterfall step (Recommendations).
   const [groupBySource, setGroupBySource] = useState(true)
@@ -446,7 +485,8 @@ export default function App() {
   const filteredBoxes = useMemo(() => {
     const q = filterText.trim().toLowerCase()
     if (!q) return boxes
-    const match = (t) => (filterField ? valueMatches(t.raw?.[filterField], q) : valueMatches(t.raw, q))
+    const match = (t) =>
+      filterField ? valueMatches(t.raw?.[filterField], q) : t.search.includes(q)
     return boxes.map((b) => ({ ...b, tiles: b.tiles.filter(match) }))
   }, [boxes, filterText, filterField])
 
@@ -486,6 +526,13 @@ export default function App() {
           // Mobile panes are full width; the draggable width is desktop-only.
           style={isMobile ? undefined : { width: leftWidth, flex: '0 0 auto' }}
         >
+          {storageFull && (
+            <div className="error">
+              Out of browser storage — history is no longer being saved. Remove some
+              history entries (or “clear all”) to free space.
+            </div>
+          )}
+
           <div className="row tabs">
             {Object.entries(PRESETS).map(([key, p]) => (
               <button
@@ -510,9 +557,15 @@ export default function App() {
               placeholder="https://api.helloretail.com/..."
               onChange={(e) => patch({ url: e.target.value })}
             />
-            <button className="send" onClick={send} disabled={loading || !cur.url}>
-              {loading ? '…' : 'Send'}
-            </button>
+            {loading ? (
+              <button className="send cancel" onClick={() => abortRef.current?.abort()}>
+                Cancel
+              </button>
+            ) : (
+              <button className="send" onClick={send} disabled={!cur.url}>
+                Send
+              </button>
+            )}
           </div>
 
           {PRESETS[preset]?.needsKey && (
@@ -557,7 +610,7 @@ export default function App() {
             />
           </details>
 
-          <details>
+          <details onToggle={(e) => setMappingOpen(e.currentTarget.open)}>
             <summary>Tile mapping</summary>
             <label className="lbl">Products array path (blank = auto-detect)</label>
             <input
@@ -720,10 +773,21 @@ export default function App() {
                     <div className="boxhead">
                       Box: {box.key} · {box.tiles.length}
                     </div>
-                    <TileGroups tiles={box.tiles} steps={box.steps} grouped={groupBySource} />
+                    <TileGroups
+                      tiles={box.tiles}
+                      steps={box.steps}
+                      grouped={groupBySource}
+                      colors={stepColors}
+                    />
                   </div>
                 ) : (
-                  <TileGroups key={bi} tiles={box.tiles} steps={box.steps} grouped={groupBySource} />
+                  <TileGroups
+                    key={bi}
+                    tiles={box.tiles}
+                    steps={box.steps}
+                    grouped={groupBySource}
+                    colors={stepColors}
+                  />
                 ),
               )}
             </>
@@ -743,22 +807,31 @@ export default function App() {
   )
 }
 
-// Assign each step a stable color from the palette (steps vary per config).
-function stepColorMap(steps) {
+// Assign palette colors by step identity across the whole response, so the same
+// step keeps its color in every box. (Colouring per box by position meant e.g.
+// ALTERNATIVES was green in one box and blue in another.)
+function stepColorMap(boxes) {
   const map = {}
-  steps.forEach((s, i) => { map[s.index] = STEP_COLORS[i % STEP_COLORS.length] })
+  let n = 0
+  for (const b of boxes) {
+    for (const s of b.steps) {
+      const key = stepKey(s)
+      if (!(key in map)) map[key] = STEP_COLORS[n++ % STEP_COLORS.length]
+    }
+  }
   return map
 }
 
+const stepKey = (s) => `${s.index}|${s.source}`
+
 // Render a box's tiles: grouped by countAfterSource step (bordered/colored) when
 // step data exists and grouping is on, otherwise a plain grid.
-function TileGroups({ tiles, steps, grouped }) {
+function TileGroups({ tiles, steps, grouped, colors }) {
   if (grouped && steps.length > 0) {
-    const colors = stepColorMap(steps)
     return (
       <div className="stepgroups">
         {groupTilesByStep(tiles).map((g, gi) => {
-          const color = g.source ? colors[g.source.index] : 'var(--border)'
+          const color = g.source ? colors[stepKey(g.source)] : 'var(--border)'
           return (
             <div key={`${g.key}-${gi}`} className="stepgroup" style={{ borderColor: color }}>
               <div className="stephead" style={{ background: color }}>

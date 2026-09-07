@@ -201,3 +201,6 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
   .filterbar { flex-wrap: wrap; }
   .filterbar .url { flex: 1 1 100%; }
 }
+
+/* Cancel replaces Send while a request is in flight. */
+.send.cancel { background: var(--bad); color: #fff; }

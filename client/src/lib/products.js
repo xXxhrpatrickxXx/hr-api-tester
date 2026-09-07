@@ -1,19 +1,27 @@
 // Utilities for pulling a list of "products" out of an arbitrary API response
 // and mapping each one onto the fields a tile needs.
 
-// Read a dot/bracket path like "data.products" or "results[0].items" from obj.
-export function getPath(obj, path) {
-  if (!path) return obj
-  const parts = path
+// Split a dot/bracket path like "data.products" or "results[0].items" into keys.
+function pathParts(path) {
+  return path
     .replace(/\[(\d+)\]/g, '.$1')
     .split('.')
     .filter(Boolean)
+}
+
+function walk(obj, parts) {
   let cur = obj
   for (const p of parts) {
     if (cur == null) return undefined
     cur = cur[p]
   }
   return cur
+}
+
+// Read a dot/bracket path like "data.products" or "results[0].items" from obj.
+export function getPath(obj, path) {
+  if (!path) return obj
+  return walk(obj, pathParts(path))
 }
 
 // Walk the response and return candidate paths that hold an array of objects,
@@ -88,7 +96,20 @@ function splitKeys(spec) {
     .filter(Boolean)
 }
 
-export function toTile(item, fieldMap = DEFAULT_FIELD_MAP) {
+// Flatten every value in an object/array into one lowercase string, so the
+// "any field" filter is a single substring test per tile instead of a fresh
+// recursive walk on every keystroke.
+function haystack(val, out = []) {
+  if (val == null) return out
+  if (typeof val === 'object') {
+    for (const v of Object.values(val)) haystack(v, out)
+    return out
+  }
+  out.push(String(val).toLowerCase())
+  return out
+}
+
+export function toTile(item, fieldMap = DEFAULT_FIELD_MAP, pos) {
   return {
     id: pick(item, splitKeys(fieldMap.id)),
     title: pick(item, splitKeys(fieldMap.title)),
@@ -97,23 +118,17 @@ export function toTile(item, fieldMap = DEFAULT_FIELD_MAP) {
     oldPrice: pick(item, splitKeys(fieldMap.oldPrice)),
     url: pick(item, splitKeys(fieldMap.url)),
     raw: item,
+    pos,
+    search: haystack(item).join('\u0000'),
   }
 }
 
 // The object that directly contains the array at `path` (i.e. its parent), so
 // we can read siblings like Recommendations' `countAfterSource`.
 function parentOf(obj, path) {
-  const parts = path
-    .replace(/\[(\d+)\]/g, '.$1')
-    .split('.')
-    .filter(Boolean)
+  const parts = pathParts(path)
   parts.pop()
-  let cur = obj
-  for (const p of parts) {
-    if (cur == null) return undefined
-    cur = cur[p]
-  }
-  return cur
+  return walk(obj, parts)
 }
 
 // Parse a Recommendations `countAfterSource` string into ordered steps. Format:
@@ -141,24 +156,28 @@ export function extractTiles(response, productsPath, fieldMap) {
   if (!Array.isArray(arr)) {
     // Candidates are arrays of objects, longest first. Never treat filters/
     // sorting as products, even when longer than the product list.
-    const candidates = findArrayPaths(response).filter(
-      (c) => !NON_PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)),
-    )
-    const productLike = (c) => {
-      const a = getPath(response, c.path)
-      return Array.isArray(a) && a.some(looksLikeProduct)
-    }
-    const inProductKey = (c) => PRODUCT_ARRAY_KEYS.includes(lastKey(c.path))
+    // Resolve each candidate once: the ranking below reads them repeatedly.
+    const candidates = findArrayPaths(response)
+      .filter((c) => !NON_PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)))
+      .map((c) => {
+        const a = getPath(response, c.path)
+        return {
+          path: c.path,
+          arr: a,
+          inProductKey: PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)),
+          productLike: Array.isArray(a) && a.some(looksLikeProduct),
+        }
+      })
     // Prefer a known product container that also looks like products, then any
     // known product container, then anything product-like, then longest.
     const chosen =
-      candidates.find((c) => inProductKey(c) && productLike(c)) ||
-      candidates.find(inProductKey) ||
-      candidates.find(productLike) ||
+      candidates.find((c) => c.inProductKey && c.productLike) ||
+      candidates.find((c) => c.inProductKey) ||
+      candidates.find((c) => c.productLike) ||
       candidates[0]
     if (chosen) {
       usedPath = chosen.path
-      arr = getPath(response, chosen.path)
+      arr = chosen.arr
     }
   }
   if (!Array.isArray(arr)) return { tiles: [], usedPath: '', steps: [] }
@@ -167,7 +186,7 @@ export function extractTiles(response, productsPath, fieldMap) {
   // any filtering, so a filtered view still shows original positions.
   const tiles = arr
     .filter((x) => x && typeof x === 'object')
-    .map((x, i) => ({ ...toTile(x, fieldMap), pos: i + 1 }))
+    .map((x, i) => toTile(x, fieldMap, i + 1))
 
   // Recommendations: attribute each product to the waterfall step that found
   // it, by walking the per-step counts in order. Steps live on the parent of
@@ -207,7 +226,7 @@ export function extractResult(response, productsPath, fieldMap) {
       .map((r, i) => {
         const tiles = r.products
           .filter((x) => x && typeof x === 'object')
-          .map((x, n) => ({ ...toTile(x, fieldMap), pos: n + 1 }))
+          .map((x, n) => toTile(x, fieldMap, n + 1))
         const steps = parseCountAfterSource(r.countAfterSource)
         assignSteps(tiles, steps)
         return { key: r.key || r.trackingKey || `Box ${i + 1}`, tiles, steps }

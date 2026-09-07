@@ -8,7 +8,7 @@ Tool to fire requests at the Hello Retail **Recommendations**, **Search**, and *
 
 - **client/** — Vite + React UI. Pick an API preset (or Custom), choose a method, edit the JSON body, hit **Send**. Results show as product tiles plus raw JSON / response headers.
 - The browser calls `core.helloretail.com` **directly** (the HR serve endpoints allow cross-origin requests), so the app is fully static and needs no server. Base URLs are baked into the client; the API key and `websiteUuid` are entered per request.
-- **server/** — an optional Express server (`:8787`) for running the whole thing locally as one process. It serves the built client and includes a `/api/proxy` forwarder, but the deployed site does not use it.
+- **server/** — an optional Express server (`:8787`) that just serves the built client, for running it locally. It holds no credentials and no proxy; the deployed site doesn't use it at all.
 
 ## Run locally
 
@@ -25,7 +25,7 @@ npm run serve    # build, then serve at http://localhost:8787
 
 ## Credentials
 
-The API key and `websiteUuid` vary per request, so they are **not** stored anywhere — enter them directly in the request (headers / JSON body) in the UI. Nothing sensitive is built into the deployed site.
+The API key and `websiteUuid` vary per request, so they are **not** stored anywhere — enter them directly in the request (headers / JSON body) in the UI. Nothing sensitive is built into the deployed site, and there is no `.env` to configure: the endpoint URLs are constants in the client.
 
 ## Features
 
