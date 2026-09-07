@@ -133,6 +133,12 @@ function groupTilesByStep(tiles) {
   return groups
 }
 
+// Config-column sizing. PANEL_PAD is .panel's horizontal padding (14px each
+// side), so panelWidth = editorWidth + PANEL_PAD keeps the editor un-clipped.
+const PANEL_PAD = 28
+const MIN_LEFT = 280
+const maxLeft = () => Math.min(1400, window.innerWidth - 320)
+
 function loadState() {
   let saved = {}
   try {
@@ -161,7 +167,7 @@ export default function App() {
   // sessions (a layout preference, not per-request data).
   const [leftWidth, setLeftWidth] = useState(() => {
     const w = Number(localStorage.getItem('hr-api-tester:leftWidth'))
-    return w >= 280 && w <= 900 ? w : 420
+    return w >= MIN_LEFT && w <= 1400 ? w : 420
   })
   useEffect(() => {
     localStorage.setItem('hr-api-tester:leftWidth', String(leftWidth))
@@ -180,6 +186,30 @@ export default function App() {
   })
   // Dimensions at mousedown, to tell a horizontal drag from a plain click.
   const dragStart = useRef(null)
+
+  // Widen the config column to fit the body editor, live as it's dragged, so a
+  // wider editor is never clipped by the panel. Only ever grows the column —
+  // shrinking it back is left to the gutter. If the editor would exceed the
+  // column's own maximum, it is capped instead.
+  const bodyRef = useRef(null)
+  useEffect(() => {
+    const el = bodyRef.current
+    if (!el || typeof ResizeObserver === 'undefined') return
+    const ro = new ResizeObserver(() => {
+      const needed = el.offsetWidth + PANEL_PAD
+      const max = maxLeft()
+      setLeftWidth((w) => (needed > w ? Math.min(needed, max) : w))
+      if (needed > max) {
+        // The resize handle writes the inline width directly, so push it back
+        // ourselves — otherwise the editor keeps overflowing the capped column.
+        const capped = max - PANEL_PAD
+        el.style.width = `${capped}px`
+        setBodySize((sz) => (sz.width === capped ? sz : { ...sz, width: capped }))
+      }
+    })
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [])
   useEffect(() => {
     localStorage.setItem('hr-api-tester:bodyHeight', String(bodySize.height))
     if (bodySize.width) localStorage.setItem('hr-api-tester:bodyWidth', String(bodySize.width))
@@ -191,8 +221,11 @@ export default function App() {
     const startX = e.clientX
     const startW = leftWidth
     const onMove = (ev) => {
-      const max = Math.min(900, window.innerWidth - 320)
-      setLeftWidth(Math.min(Math.max(startW + ev.clientX - startX, 280), max))
+      const next = Math.min(Math.max(startW + ev.clientX - startX, MIN_LEFT), maxLeft())
+      setLeftWidth(next)
+      // Narrowing the column pulls a pinned editor width in with it.
+      const inner = next - PANEL_PAD
+      setBodySize((sz) => (sz.width && sz.width > inner ? { ...sz, width: inner } : sz))
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
@@ -473,6 +506,7 @@ export default function App() {
             Body (JSON) <button className="link" onClick={formatBody}>format</button>
           </label>
           <textarea
+            ref={bodyRef}
             className="code"
             value={cur.body}
             spellCheck={false}
@@ -491,7 +525,9 @@ export default function App() {
               if (!start) return
               dragStart.current = null
               const height = el.offsetHeight
-              const width = el.offsetWidth !== start.w ? el.offsetWidth : bodySize.width
+              const dragged = el.offsetWidth !== start.w ? el.offsetWidth : bodySize.width
+              // Never wider than the column can grow, so nothing gets clipped.
+              const width = dragged ? Math.min(dragged, maxLeft() - PANEL_PAD) : dragged
               if (height !== bodySize.height || width !== bodySize.width) {
                 setBodySize({ height, width })
               }
