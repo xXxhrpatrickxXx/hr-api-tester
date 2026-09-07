@@ -151,3 +151,43 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .prices { display: flex; gap: 8px; align-items: baseline; }
 .price { font-weight: 700; font-size: 14px; }
 .old { color: var(--muted); text-decoration: line-through; font-size: 12px; }
+
+/* ---- Mobile: one pane at a time, switched by the tab bar ---- */
+.mobiletabs {
+  display: flex; gap: 8px; padding: 8px 12px;
+  border-bottom: 1px solid var(--border); background: var(--panel);
+}
+.mobiletabs .chip { flex: 1; text-align: center; padding: 8px 12px; font-size: 13px; }
+
+@media (max-width: 820px) {
+  /* Let the page scroll naturally instead of nesting scroll areas. */
+  .app { height: auto; min-height: 100vh; }
+  .layout { display: block; min-height: 0; }
+  .panel { overflow: visible; }
+  .panel.request { border-right: 0; }
+  .gutter { display: none; }
+  /* The status row (badge, timing, view chips) must wrap, not overflow. */
+  .statusbar { position: static; flex-wrap: wrap; }
+  .statusbar .spacer { display: none; }
+
+  .topbar { padding: 10px 12px; gap: 8px; flex-wrap: wrap; }
+  .topbar h1 { font-size: 14px; }
+
+  /* Editors fill the width; height stays user-resizable. */
+  .code { max-width: 100%; resize: vertical; }
+
+  /* Stack the method/URL/Send row so the URL is readable. */
+  .request .row:has(> .send) { flex-wrap: wrap; }
+  .request .url { flex: 1 1 100%; order: -1; }
+
+  /* Roomier tap targets. */
+  .chip { padding: 6px 12px; }
+  .hist-act { padding: 8px 10px; font-size: 14px; }
+
+  /* Tiles: two per row on a phone rather than a fixed 180px. */
+  .grid { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px; }
+  .stepbody .tile { width: calc(50% - 3px); }
+  .stepgroup { max-width: 100%; }
+  .filterbar { flex-wrap: wrap; }
+  .filterbar .url { flex: 1 1 100%; }
+}

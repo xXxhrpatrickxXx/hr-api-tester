@@ -136,6 +136,8 @@ function groupTilesByStep(tiles) {
 // Config-column sizing. PANEL_PAD is .panel's horizontal padding (14px each
 // side), so panelWidth = editorWidth + PANEL_PAD keeps the editor un-clipped.
 const PANEL_PAD = 28
+// Below this the two columns don't fit, so panes are tabbed instead.
+const MOBILE_QUERY = '(max-width: 820px)'
 const MIN_LEFT = 280
 const maxLeft = () => Math.min(1400, window.innerWidth - 320)
 
@@ -162,6 +164,17 @@ export default function App() {
 
   const [loading, setLoading] = useState(false)
   const [tab, setTab] = useState('tiles')
+
+  // On narrow screens the side-by-side columns don't fit, so the request and
+  // results panes become tabs and only one is shown at a time.
+  const [isMobile, setIsMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches)
+  const [mobilePane, setMobilePane] = useState('request')
+  useEffect(() => {
+    const mq = window.matchMedia(MOBILE_QUERY)
+    const onChange = (e) => setIsMobile(e.matches)
+    mq.addEventListener('change', onChange)
+    return () => mq.removeEventListener('change', onChange)
+  }, [])
 
   // Width of the config column, draggable via the gutter. Persisted across
   // sessions (a layout preference, not per-request data).
@@ -194,7 +207,7 @@ export default function App() {
   const bodyRef = useRef(null)
   useEffect(() => {
     const el = bodyRef.current
-    if (!el || typeof ResizeObserver === 'undefined') return
+    if (isMobile || !el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
       const needed = el.offsetWidth + PANEL_PAD
       const max = maxLeft()
@@ -209,7 +222,7 @@ export default function App() {
     })
     ro.observe(el)
     return () => ro.disconnect()
-  }, [])
+  }, [isMobile])
   useEffect(() => {
     localStorage.setItem('hr-api-tester:bodyHeight', String(bodySize.height))
     if (bodySize.width) localStorage.setItem('hr-api-tester:bodyWidth', String(bodySize.width))
@@ -356,6 +369,7 @@ export default function App() {
     })
     setTab('tiles')
     setLoading(false)
+    if (isMobile) setMobilePane('results')
   }
 
   // Load a past request back into the form and show its response.
@@ -458,9 +472,32 @@ export default function App() {
         <span className="hint">calls core.helloretail.com directly</span>
       </header>
 
+      {isMobile && (
+        <div className="mobiletabs">
+          {[
+            ['request', 'Request'],
+            ['results', 'Results'],
+          ].map(([key, label]) => (
+            <button
+              key={key}
+              className={mobilePane === key ? 'chip active' : 'chip'}
+              onClick={() => setMobilePane(key)}
+            >
+              {label}
+              {key === 'results' && resp ? ` · ${totalTiles}` : ''}
+            </button>
+          ))}
+        </div>
+      )}
+
       <div className="layout">
         {/* ---- Request panel ---- */}
-        <section className="panel request" style={{ width: leftWidth, flex: '0 0 auto' }}>
+        <section
+          className="panel request"
+          hidden={isMobile && mobilePane !== 'request'}
+          // Mobile panes are full width; the draggable width is desktop-only.
+          style={isMobile ? undefined : { width: leftWidth, flex: '0 0 auto' }}
+        >
           <div className="row tabs">
             {Object.entries(PRESETS).map(([key, p]) => (
               <button
@@ -511,7 +548,7 @@ export default function App() {
             value={cur.body}
             spellCheck={false}
             onChange={(e) => patch({ body: e.target.value })}
-            style={{ height: bodySize.height, ...(bodySize.width ? { width: bodySize.width } : null) }}
+            style={{ height: bodySize.height, ...(!isMobile && bodySize.width ? { width: bodySize.width } : null) }}
             onMouseDown={(e) => {
               const el = e.currentTarget
               dragStart.current = { w: el.offsetWidth, h: el.offsetHeight }
@@ -619,7 +656,7 @@ export default function App() {
         <div className="gutter" onMouseDown={startResize} title="Drag to resize" />
 
         {/* ---- Results panel ---- */}
-        <section className="panel results">
+        <section className="panel results" hidden={isMobile && mobilePane !== 'results'}>
           <div className="row statusbar">
             {resp && (
               <>
