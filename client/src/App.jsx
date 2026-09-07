@@ -186,59 +186,47 @@ export default function App() {
     localStorage.setItem('hr-api-tester:leftWidth', String(leftWidth))
   }, [leftWidth])
 
-  // Size of the JSON body textarea, set by dragging its resize handle (both
-  // directions). Persisted so it survives reloads and solution switches.
-  // width null = fall back to the CSS 100% of the config column.
-  const [bodySize, setBodySize] = useState(() => {
+  // Height of the JSON body editor, set by dragging its resize handle and
+  // persisted. Its *width* is not stored: the editor always fills the config
+  // column, so it follows the column as that is resized.
+  const [bodyHeight, setBodyHeight] = useState(() => {
     const h = Number(localStorage.getItem('hr-api-tester:bodyHeight'))
-    const w = Number(localStorage.getItem('hr-api-tester:bodyWidth'))
-    return {
-      height: h >= 90 && h <= 4000 ? h : 260,
-      width: w >= 200 && w <= 4000 ? w : null,
-    }
+    return h >= 90 && h <= 4000 ? h : 260
   })
-  // Dimensions at mousedown, to tell a horizontal drag from a plain click.
-  const dragStart = useRef(null)
+  useEffect(() => {
+    localStorage.setItem('hr-api-tester:bodyHeight', String(bodyHeight))
+    // Width used to be pinned separately; drop any value left from then.
+    localStorage.removeItem('hr-api-tester:bodyWidth')
+  }, [bodyHeight])
 
-  // Widen the config column to fit the body editor, live as it's dragged, so a
-  // wider editor is never clipped by the panel. Only ever grows the column —
-  // shrinking it back is left to the gutter. If the editor would exceed the
-  // column's own maximum, it is capped instead.
+  // Dragging the editor's corner sideways widens the config column instead of
+  // the editor itself: the column grows to fit, then the editor snaps back to
+  // filling it. Capped at the column's own maximum.
   const bodyRef = useRef(null)
   useEffect(() => {
     const el = bodyRef.current
     if (isMobile || !el || typeof ResizeObserver === 'undefined') return
     const ro = new ResizeObserver(() => {
-      const needed = el.offsetWidth + PANEL_PAD
+      if (!el.style.width) return // already filling the column
       const max = maxLeft()
-      setLeftWidth((w) => (needed > w ? Math.min(needed, max) : w))
-      if (needed > max) {
-        // The resize handle writes the inline width directly, so push it back
-        // ourselves — otherwise the editor keeps overflowing the capped column.
-        const capped = max - PANEL_PAD
-        el.style.width = `${capped}px`
-        setBodySize((sz) => (sz.width === capped ? sz : { ...sz, width: capped }))
+      const needed = Math.min(el.offsetWidth + PANEL_PAD, max)
+      setLeftWidth((w) => (needed > w ? needed : w))
+      if (el.offsetWidth + PANEL_PAD >= max) {
+        // At the cap, stop the editor overflowing: the resize handle writes the
+        // inline width directly, so clear it and let the column bound it.
+        el.style.width = ''
       }
     })
     ro.observe(el)
     return () => ro.disconnect()
   }, [isMobile])
-  useEffect(() => {
-    localStorage.setItem('hr-api-tester:bodyHeight', String(bodySize.height))
-    if (bodySize.width) localStorage.setItem('hr-api-tester:bodyWidth', String(bodySize.width))
-    else localStorage.removeItem('hr-api-tester:bodyWidth')
-  }, [bodySize])
 
   function startResize(e) {
     e.preventDefault()
     const startX = e.clientX
     const startW = leftWidth
     const onMove = (ev) => {
-      const next = Math.min(Math.max(startW + ev.clientX - startX, MIN_LEFT), maxLeft())
-      setLeftWidth(next)
-      // Narrowing the column pulls a pinned editor width in with it.
-      const inner = next - PANEL_PAD
-      setBodySize((sz) => (sz.width && sz.width > inner ? { ...sz, width: inner } : sz))
+      setLeftWidth(Math.min(Math.max(startW + ev.clientX - startX, MIN_LEFT), maxLeft()))
     }
     const onUp = () => {
       window.removeEventListener('mousemove', onMove)
@@ -548,26 +536,13 @@ export default function App() {
             value={cur.body}
             spellCheck={false}
             onChange={(e) => patch({ body: e.target.value })}
-            style={{ height: bodySize.height, ...(!isMobile && bodySize.width ? { width: bodySize.width } : null) }}
-            onMouseDown={(e) => {
-              const el = e.currentTarget
-              dragStart.current = { w: el.offsetWidth, h: el.offsetHeight }
-            }}
+            style={{ height: bodyHeight }}
             onMouseUp={(e) => {
-              // Persist the size after a drag on the resize handle. The width is
-              // only pinned if actually dragged horizontally, so otherwise the
-              // editor keeps flexing with the config column.
+              // Keep the dragged height; drop any dragged width so the editor
+              // goes back to filling the column (which grew to match it).
               const el = e.currentTarget
-              const start = dragStart.current
-              if (!start) return
-              dragStart.current = null
-              const height = el.offsetHeight
-              const dragged = el.offsetWidth !== start.w ? el.offsetWidth : bodySize.width
-              // Never wider than the column can grow, so nothing gets clipped.
-              const width = dragged ? Math.min(dragged, maxLeft() - PANEL_PAD) : dragged
-              if (height !== bodySize.height || width !== bodySize.width) {
-                setBodySize({ height, width })
-              }
+              el.style.width = ''
+              if (el.offsetHeight !== bodyHeight) setBodyHeight(el.offsetHeight)
             }}
           />
 
