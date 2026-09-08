@@ -9,6 +9,7 @@
   --ok: #2ea043;
   --bad: #d1242f;
   --banner: #d29922;
+  --sponsored: #bf5af2;
 }
 
 * { box-sizing: border-box; }
@@ -216,3 +217,12 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
   text-transform: uppercase; pointer-events: none;
 }
 .bmeta { font-size: 11px; color: var(--muted); word-break: break-word; font-variant-numeric: tabular-nums; }
+/* Sponsored products: a normal product boosted by a retail media campaign. */
+.tile.sponsored { border-color: var(--sponsored); }
+.stag {
+  position: absolute; top: 4px; right: 4px; z-index: 1;
+  background: var(--sponsored); color: #0b1020;
+  border-radius: 5px; padding: 1px 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  text-transform: uppercase; pointer-events: none;
+}

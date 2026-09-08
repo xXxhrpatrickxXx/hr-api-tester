@@ -72,6 +72,16 @@ export const DEFAULT_FIELD_MAP = {
 // bannerImages keys are arbitrary placement names ("grid", "wide", ...); each
 // holds { url, width, height, altText }. A placement can carry an empty url
 // (undocumented, but it happens), so take the first that actually has one.
+// The campaign id is top level on Pages/Search items, but recoms banners only
+// carry it inside trackingCode ("...|rm-<id>|"). Search products use "rm:<id>".
+const RM_IN_TRACKING = /(?:^|[|])rm[-:]([0-9a-zA-Z]{8,})/
+
+function campaignOf(item) {
+  if (item.retailMediaCampaignId) return item.retailMediaCampaignId
+  const m = typeof item.trackingCode === 'string' ? item.trackingCode.match(RM_IN_TRACKING) : null
+  return m ? m[1] : undefined
+}
+
 function bannerImage(item) {
   const imgs = item.bannerImages
   if (!imgs || typeof imgs !== 'object') return undefined
@@ -137,7 +147,8 @@ export function toTile(item, fieldMap = DEFAULT_FIELD_MAP, pos) {
     url: pick(item, splitKeys(fieldMap.url)),
     isBanner,
     banner, // { url, width, height, altText, placement } of the chosen artwork
-    campaignId: item.retailMediaCampaignId,
+    // Non-banner items with a campaign id are sponsored products.
+    campaignId: campaignOf(item),
     raw: item,
     pos,
     search: haystack(item).join('\u0000'),
@@ -218,14 +229,38 @@ export function extractTiles(response, productsPath, fieldMap) {
   return { tiles, usedPath, steps }
 }
 
-// Tag each tile with the waterfall step that produced it (in order, per count).
+// Tag each tile with the waterfall step that produced it, walking the per-step
+// counts in order.
+//
+// Banners are the wrinkle: they occupy a slot in the products array but are NOT
+// counted in countAfterSource (the counts add up to the products alone), so
+// consuming one against a step's count would shift every later product into the
+// wrong step. They're skipped for attribution and instead recorded as sitting
+// inside the step block they appear in, so they still render in place.
+//
+// `source` = the step that produced this product (products only).
+// `step`   = the step block the tile renders in (products and banners).
 function assignSteps(tiles, steps) {
   if (!steps.length) return
   let i = 0
   for (const step of steps) {
-    for (let n = 0; n < step.count && i < tiles.length; n++, i++) {
-      tiles[i].source = step
+    let n = 0
+    while (n < step.count && i < tiles.length) {
+      const t = tiles[i]
+      i++
+      if (t.isBanner) {
+        t.step = step
+        continue
+      }
+      t.source = step
+      t.step = step
+      n++
     }
+  }
+  // Any banners trailing after the last counted product belong to the last step.
+  const last = steps[steps.length - 1]
+  for (; i < tiles.length; i++) {
+    if (tiles[i].isBanner) tiles[i].step = last
   }
 }
 

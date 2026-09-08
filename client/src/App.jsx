@@ -134,10 +134,13 @@ const STEP_COLORS = [
 function groupTilesByStep(tiles) {
   const groups = []
   for (const t of tiles) {
-    const key = t.source ? t.source.index : '_none'
+    // `step` covers banners too, which sit inside a step block without being
+    // attributed to it; `source` alone would split a step around them.
+    const step = t.step || t.source || null
+    const key = step ? step.index : '_none'
     const last = groups[groups.length - 1]
     if (last && last.key === key) last.tiles.push(t)
-    else groups.push({ key, source: t.source || null, tiles: [t] })
+    else groups.push({ key, source: step, tiles: [t] })
   }
   return groups
 }
@@ -495,6 +498,10 @@ export default function App() {
   // Retail media banners share the result array with products (Pages), so
   // call them out separately — the split is the point when testing placement.
   const bannerCount = useMemo(() => allTiles.filter((t) => t.isBanner).length, [allTiles])
+  const sponsoredCount = useMemo(
+    () => allTiles.filter((t) => !t.isBanner && t.campaignId).length,
+    [allTiles],
+  )
 
   return (
     <div className="app">
@@ -698,7 +705,8 @@ export default function App() {
                 {usedPath !== undefined && payload && (
                   <span className="hint">
                     {filterText.trim() ? `${shownTiles} / ${totalTiles}` : totalTiles} tiles
-                    {bannerCount ? ` · ${bannerCount} banners` : ''}
+                    {bannerCount ? ` · ${bannerCount} banner${bannerCount > 1 ? 's' : ''}` : ''}
+                    {sponsoredCount ? ` · ${sponsoredCount} sponsored` : ''}
                     {boxes.length > 1 ? ` · ${boxes.length} boxes` : ''}
                     {usedPath ? ` from "${usedPath}"` : ''}
                   </span>
@@ -839,9 +847,16 @@ function TileGroups({ tiles, steps, grouped, colors }) {
           return (
             <div key={`${g.key}-${gi}`} className="stepgroup" style={{ borderColor: color }}>
               <div className="stephead" style={{ background: color }}>
-                {g.source
-                  ? `Step ${g.source.index}: ${g.source.source} · ${g.source.ms}ms · ${g.tiles.length}`
-                  : `Unattributed · ${g.tiles.length}`}
+                {(() => {
+                  const banners = g.tiles.filter((t) => t.isBanner).length
+                  const products = g.tiles.length - banners
+                  // Banners aren't part of countAfterSource, so keep them out
+                  // of the step's product count rather than inflating it.
+                  const extra = banners ? ` +${banners} banner${banners > 1 ? 's' : ''}` : ''
+                  return g.source
+                    ? `Step ${g.source.index}: ${g.source.source} · ${g.source.ms}ms · ${products}${extra}`
+                    : `Unattributed · ${products}${extra}`
+                })()}
               </div>
               <div className="stepbody">
                 {g.tiles.map((t, i) => (
@@ -875,18 +890,20 @@ const Tile = memo(function Tile({ t }) {
     t.banner?.altText ||
     (t.isBanner ? 'Retail media banner' : t.id ? String(t.id) : '(untitled)')
   return (
-    <div className={t.isBanner ? 'tile banner' : 'tile'}>
+    <div className={t.isBanner ? 'tile banner' : t.campaignId ? 'tile sponsored' : 'tile'}>
       <div className="thumb">
         {/* Position in the response, so filtered views still show the original
             ordering (e.g. #1, #5, #18, #72). */}
         {t.pos != null && (
           <span className="pos" title={`Position #${t.pos} in the response`}>#{t.pos}</span>
         )}
-        {t.isBanner && (
+        {t.isBanner ? (
           <span className="btag" title={`Retail media campaign ${t.campaignId || '(unknown)'}`}>
             banner
           </span>
-        )}
+        ) : t.campaignId ? (
+          <span className="stag" title={`Retail media campaign ${t.campaignId}`}>sponsored</span>
+        ) : null}
         {t.image ? (
           <img src={t.image} alt={t.banner?.altText || t.title || ''} loading="lazy" />
         ) : (
