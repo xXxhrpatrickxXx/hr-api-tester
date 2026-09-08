@@ -8,6 +8,7 @@
   --accent: #6ea8fe;
   --ok: #2ea043;
   --bad: #d1242f;
+  --banner: #d29922;
 }
 
 * { box-sizing: border-box; }
@@ -204,3 +205,14 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 
 /* Cancel replaces Send while a request is in flight. */
 .send.cancel { background: var(--bad); color: #fff; }
+
+/* Retail media banners sit in the same result array as products. */
+.tile.banner { border-color: var(--banner); }
+.btag {
+  position: absolute; top: 4px; right: 4px; z-index: 1;
+  background: var(--banner); color: #0b1020;
+  border-radius: 5px; padding: 1px 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  text-transform: uppercase; pointer-events: none;
+}
+.bmeta { font-size: 11px; color: var(--muted); word-break: break-word; font-variant-numeric: tabular-nums; }

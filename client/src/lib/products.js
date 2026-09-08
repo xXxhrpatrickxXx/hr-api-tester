@@ -66,8 +66,23 @@ export const DEFAULT_FIELD_MAP = {
   id: 'productNumber',
 }
 
+// Retail media banners are interleaved into the same result array as products
+// (Pages). They carry isBanner + bannerImages instead of imgUrl/productNumber.
+// https://developer.helloretail.com/api/retailmedia/banners/
+// bannerImages keys are arbitrary placement names ("grid", "wide", ...); each
+// holds { url, width, height, altText }. A placement can carry an empty url
+// (undocumented, but it happens), so take the first that actually has one.
+function bannerImage(item) {
+  const imgs = item.bannerImages
+  if (!imgs || typeof imgs !== 'object') return undefined
+  for (const [placement, img] of Object.entries(imgs)) {
+    if (img && typeof img === 'object' && img.url) return { ...img, placement }
+  }
+  return undefined
+}
+
 // Keys that mark an array item as a Hello Retail product.
-const PRODUCT_KEYS = ['title', 'imgUrl', 'productNumber', 'price', 'oldPrice', 'url']
+const PRODUCT_KEYS = ['title', 'imgUrl', 'productNumber', 'price', 'oldPrice', 'url', 'isBanner']
 
 function looksLikeProduct(item) {
   return item && typeof item === 'object' && PRODUCT_KEYS.some((k) => k in item)
@@ -110,13 +125,19 @@ function haystack(val, out = []) {
 }
 
 export function toTile(item, fieldMap = DEFAULT_FIELD_MAP, pos) {
+  const isBanner = item.isBanner === true
+  const banner = isBanner ? bannerImage(item) : undefined
   return {
     id: pick(item, splitKeys(fieldMap.id)),
     title: pick(item, splitKeys(fieldMap.title)),
-    image: pick(item, splitKeys(fieldMap.image)),
+    // Banners have no imgUrl; their artwork lives under bannerImages.
+    image: pick(item, splitKeys(fieldMap.image)) || banner?.url,
     price: pick(item, splitKeys(fieldMap.price)),
     oldPrice: pick(item, splitKeys(fieldMap.oldPrice)),
     url: pick(item, splitKeys(fieldMap.url)),
+    isBanner,
+    banner, // { url, width, height, altText, placement } of the chosen artwork
+    campaignId: item.retailMediaCampaignId,
     raw: item,
     pos,
     search: haystack(item).join('\u0000'),

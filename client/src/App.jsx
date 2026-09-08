@@ -492,6 +492,9 @@ export default function App() {
 
   const totalTiles = allTiles.length
   const shownTiles = filteredBoxes.reduce((n, b) => n + b.tiles.length, 0)
+  // Retail media banners share the result array with products (Pages), so
+  // call them out separately — the split is the point when testing placement.
+  const bannerCount = useMemo(() => allTiles.filter((t) => t.isBanner).length, [allTiles])
 
   return (
     <div className="app">
@@ -695,6 +698,7 @@ export default function App() {
                 {usedPath !== undefined && payload && (
                   <span className="hint">
                     {filterText.trim() ? `${shownTiles} / ${totalTiles}` : totalTiles} tiles
+                    {bannerCount ? ` · ${bannerCount} banners` : ''}
                     {boxes.length > 1 ? ` · ${boxes.length} boxes` : ''}
                     {usedPath ? ` from "${usedPath}"` : ''}
                   </span>
@@ -864,26 +868,46 @@ function TileGroups({ tiles, steps, grouped, colors }) {
 // object refs, so this skips nearly all of that reconciliation.
 const Tile = memo(function Tile({ t }) {
   const [open, setOpen] = useState(false)
+  // `fields` often omits title (and banners have none), so fall back to the
+  // banner's alt text, then the product number, before giving up.
+  const label =
+    t.title ||
+    t.banner?.altText ||
+    (t.isBanner ? 'Retail media banner' : t.id ? String(t.id) : '(untitled)')
   return (
-    <div className="tile">
+    <div className={t.isBanner ? 'tile banner' : 'tile'}>
       <div className="thumb">
         {/* Position in the response, so filtered views still show the original
             ordering (e.g. #1, #5, #18, #72). */}
         {t.pos != null && (
-          <span className="pos" title={`Product #${t.pos} in the response`}>#{t.pos}</span>
+          <span className="pos" title={`Position #${t.pos} in the response`}>#{t.pos}</span>
+        )}
+        {t.isBanner && (
+          <span className="btag" title={`Retail media campaign ${t.campaignId || '(unknown)'}`}>
+            banner
+          </span>
         )}
         {t.image ? (
-          <img src={t.image} alt={t.title || ''} loading="lazy" />
+          <img src={t.image} alt={t.banner?.altText || t.title || ''} loading="lazy" />
         ) : (
-          <div className="noimg">no image</div>
+          <div className="noimg">{t.isBanner ? 'no banner image' : 'no image'}</div>
         )}
       </div>
       <div className="meta">
-        <div className="title" title={t.title}>{t.title || '(untitled)'}</div>
-        <div className="prices">
-          {t.price != null && <span className="price">{String(t.price)}</span>}
-          {t.oldPrice != null && <span className="old">{String(t.oldPrice)}</span>}
-        </div>
+        <div className="title" title={label}>{label}</div>
+        {t.isBanner ? (
+          <div className="bmeta">
+            {t.banner
+              ? `${t.banner.placement} · ${t.banner.width}×${t.banner.height}`
+              : 'no artwork'}
+            {t.campaignId ? ` · ${t.campaignId}` : ''}
+          </div>
+        ) : (
+          <div className="prices">
+            {t.price != null && <span className="price">{String(t.price)}</span>}
+            {t.oldPrice != null && <span className="old">{String(t.oldPrice)}</span>}
+          </div>
+        )}
         <div className="row">
           {t.url && (
             <a className="link" href={t.url} target="_blank" rel="noreferrer">open</a>
