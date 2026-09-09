@@ -106,12 +106,24 @@ const PRODUCT_ARRAY_KEYS = ['products', 'results', 'result']
 // array can be longer than the product list and otherwise get mis-detected.
 const NON_PRODUCT_ARRAY_KEYS = ['filters', 'sorting', 'facets']
 
+// Sibling result sets that look exactly like the product one: Search can
+// return categories.results / contents.results alongside products.results,
+// and those carry title + url so they pass every "looks like a product"
+// test. Used only as a last resort — otherwise a response with more
+// categories than products renders the categories as tiles.
+const SIBLING_RESULT_CONTAINERS = ['categories', 'contents', 'brands', 'pages']
+
 // Last object key in a path, ignoring a trailing array index.
 // "products.results" -> "results", "responses[0].products" -> "products".
 function lastKey(path) {
-  const noIndex = path.replace(/\[\d+\]$/, '')
-  const dot = noIndex.lastIndexOf('.')
-  return dot === -1 ? noIndex : noIndex.slice(dot + 1)
+  const parts = pathParts(path)
+  return parts[parts.length - 1] ?? ""
+}
+
+// The key the array hangs off: "products.results" -> "products".
+function parentKey(path) {
+  const parts = pathParts(path)
+  return parts[parts.length - 2] ?? ""
 }
 
 function splitKeys(spec) {
@@ -193,18 +205,28 @@ export function extractTiles(response, productsPath, fieldMap) {
       .filter((c) => !NON_PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)))
       .map((c) => {
         const a = getPath(response, c.path)
+        const parts = pathParts(c.path)
         return {
           path: c.path,
           arr: a,
+          // products.results / products.result, or responses[].products.
+          underProducts: parentKey(c.path) === 'products' || lastKey(c.path) === 'products',
           inProductKey: PRODUCT_ARRAY_KEYS.includes(lastKey(c.path)),
+          // A parallel result set (categories, contents, ...) rather than products.
+          sibling: parts.some((seg) => SIBLING_RESULT_CONTAINERS.includes(seg)),
           productLike: Array.isArray(a) && a.some(looksLikeProduct),
         }
       })
-    // Prefer a known product container that also looks like products, then any
-    // known product container, then anything product-like, then longest.
+    // Rank rather than take the longest: Search returns categories.results
+    // beside products.results, and either can be the longer array.
     const chosen =
-      candidates.find((c) => c.inProductKey && c.productLike) ||
-      candidates.find((c) => c.inProductKey) ||
+      candidates.find((c) => !c.sibling && c.underProducts && c.productLike) ||
+      candidates.find((c) => !c.sibling && c.underProducts) ||
+      // Legacy shapes: result[boxId].result, root results.
+      candidates.find((c) => !c.sibling && c.inProductKey && c.productLike) ||
+      candidates.find((c) => !c.sibling && c.inProductKey) ||
+      candidates.find((c) => !c.sibling && c.productLike) ||
+      // Nothing but sibling sets (e.g. a categories-only response).
       candidates.find((c) => c.productLike) ||
       candidates[0]
     if (chosen) {
