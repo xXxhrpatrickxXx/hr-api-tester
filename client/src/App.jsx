@@ -714,6 +714,23 @@ export default function App() {
               </>
             )}
             <div className="spacer" />
+            {resp && (
+              <CopyButton
+                label={tab === 'headers' ? 'copy headers' : 'copy JSON'}
+                title={
+                  tab === 'headers'
+                    ? 'Copy the response headers'
+                    : 'Copy the full JSON response'
+                }
+                text={() =>
+                  tab === 'headers'
+                    ? JSON.stringify(resp.headers ?? {}, null, 2)
+                    : resp.json != null
+                      ? JSON.stringify(resp.json, null, 2)
+                      : (resp.text ?? '')
+                }
+              />
+            )}
             {['tiles', 'json', 'headers'].map((t) => (
               <button
                 key={t}
@@ -878,6 +895,48 @@ function TileGroups({ tiles, steps, grouped, colors }) {
   )
 }
 
+// Clipboard write. navigator.clipboard needs a secure context (https or
+// localhost, both of which we have), but fall back to the old selection trick
+// rather than failing outright.
+function writeClipboard(value) {
+  if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value)
+  return new Promise((resolve, reject) => {
+    const ta = document.createElement('textarea')
+    ta.value = value
+    ta.setAttribute('readonly', '')
+    ta.style.position = 'fixed'
+    ta.style.top = '-1000px'
+    document.body.appendChild(ta)
+    ta.select()
+    const ok = document.execCommand('copy')
+    document.body.removeChild(ta)
+    ok ? resolve() : reject(new Error('copy rejected'))
+  })
+}
+
+// `text` is a function so a large response is only serialized on click, not on
+// every render.
+function CopyButton({ text, className = 'chip', label = 'copy', title = 'Copy to clipboard' }) {
+  const [state, setState] = useState('idle') // idle | ok | err
+  const timer = useRef(null)
+  useEffect(() => () => clearTimeout(timer.current), [])
+  async function copy() {
+    try {
+      await writeClipboard(typeof text === 'function' ? text() : String(text ?? ''))
+      setState('ok')
+    } catch {
+      setState('err')
+    }
+    clearTimeout(timer.current)
+    timer.current = setTimeout(() => setState('idle'), 1400)
+  }
+  return (
+    <button className={className} onClick={copy} title={title}>
+      {state === 'ok' ? 'copied' : state === 'err' ? 'failed' : label}
+    </button>
+  )
+}
+
 // Memoized: any App state change (typing, filtering, resizing) re-renders the
 // whole tree, and a response can hold hundreds of tiles. Tile props are stable
 // object refs, so this skips nearly all of that reconciliation.
@@ -932,6 +991,14 @@ const Tile = memo(function Tile({ t }) {
           <button className="link" onClick={() => setOpen((v) => !v)}>
             {open ? 'hide' : 'raw'}
           </button>
+          {open && (
+            <CopyButton
+              className="link"
+              label="copy"
+              title="Copy this item's JSON"
+              text={() => JSON.stringify(t.raw, null, 2)}
+            />
+          )}
         </div>
         {open && <pre className="code view sm">{JSON.stringify(t.raw, null, 2)}</pre>}
       </div>
