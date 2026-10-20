@@ -1,5 +1,6 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { extractResult, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
+import { buildLegacyUrl, paramsFromUrl, parseParams } from './lib/legacy.js'
 
 // Request templates per API. The endpoint is resolved client-side from BASES
 // so the URL field shows the real value. The websiteUuid / API key vary per
@@ -24,21 +25,22 @@ const PRESETS = {
     needsKey: true, // a unique page key is appended to the endpoint
     body: JSON.stringify({ websiteUuid: '', url: '', size: 24 }, null, 2),
   },
-  // Legacy APIs are GET with query-string params (no JSON body). The URL is
-  // prefilled with a param template to edit in place.
+  // Legacy APIs are GET with query-string params (no JSON body). The editor
+  // holds the parameters as JSON (paste them from the API log) and the URL is
+  // rebuilt from them as you type.
   legacyRecoms: {
     label: 'Recoms (legacy)',
     method: 'GET',
     baseKey: 'legacyRecoms',
-    query: 'format=json&ids=&trackingUserId=&url=',
-    body: '',
+    legacy: true,
+    body: JSON.stringify({ ids: '', trackingUserId: '', url: '' }, null, 2),
   },
   legacySearch: {
     label: 'Search (legacy)',
     method: 'GET',
     baseKey: 'legacySearch',
-    query: 'format=json&key=&q=&product_count=24&product_start=0',
-    body: '',
+    legacy: true,
+    body: JSON.stringify({ key: '', q: '', product_count: '24', product_start: '0' }, null, 2),
   },
   custom: {
     label: 'Custom',
@@ -58,14 +60,21 @@ const BASES = {
   legacySearch: 'https://core.helloretail.com/api/v1/search/partnerSearch',
 }
 
-// Build the literal endpoint URL for a preset from the base URLs.
-function resolveUrl(presetKey, pagesKey, bases) {
+// Build the literal endpoint URL for a preset from the base URLs. Legacy
+// presets append their parameters (`body`); null if those don't parse.
+function resolveUrl(presetKey, pagesKey, bases, body) {
   const p = PRESETS[presetKey]
   if (!p || !p.baseKey || !bases) return ''
   const base = bases[p.baseKey] || ''
   if (!base) return ''
   if (p.needsKey) return `${base.replace(/\/+$/, '')}/${pagesKey || ''}`
-  if (p.query) return `${base}?${p.query}`
+  if (p.legacy) {
+    try {
+      return buildLegacyUrl(base, parseParams(body))
+    } catch {
+      return null
+    }
+  }
   return base
 }
 
@@ -102,15 +111,35 @@ function entrySummary(entry) {
 
 function buildSummary(entry) {
   try {
-    const b = JSON.parse(entry.body || '{}')
+    // Legacy entries saved before the parameters editor only have a URL.
+    const b = entry.body ? JSON.parse(entry.body) : JSON.parse(paramsFromUrl(entry.url))
     if (b.query) return `“${b.query}”`
+    if (b.q) return `“${b.q}”`
     if (b.boxId) return `box ${b.boxId}`
+    if (b.ids) return `box ${b.ids}`
     if (b.url) return b.url.replace(/^https?:\/\//, '')
   } catch {
     /* ignore unparseable body */
   }
   if (entry.pagesKey) return entry.pagesKey
   return entry.method
+}
+
+// The API error in a response, or null if it succeeded. The serve endpoints
+// fail with a non-2xx status and {message, code, success: false}; the legacy
+// ones answer 200 with {error, errorCode}, so the status alone isn't enough.
+function responseError(resp) {
+  if (!resp) return null
+  const j = resp.json
+  const obj = j && typeof j === 'object' && !Array.isArray(j) ? j : null
+  const inBody = !!obj && (obj.success === false || typeof obj.error === 'string')
+  if (resp.ok && !inBody) return null
+  const message = obj?.message || obj?.error
+  return {
+    code: obj?.code || obj?.errorCode || null,
+    message: typeof message === 'string' ? message : null,
+    detail: j != null ? JSON.stringify(j, null, 2) : resp.text || '',
+  }
 }
 
 // Case-insensitive substring match against one field's value, recursing into
@@ -163,6 +192,11 @@ function loadState() {
   const sessions = {}
   for (const key of Object.keys(PRESETS)) {
     sessions[key] = { ...blankSession(key), ...(saved.sessions?.[key] || {}) }
+    // Legacy sessions saved before the parameters editor kept their params in
+    // the URL only; lift them into the editor.
+    if (PRESETS[key].legacy && !sessions[key].body.trim() && sessions[key].url) {
+      sessions[key].body = paramsFromUrl(sessions[key].url)
+    }
   }
   return { preset: saved.preset || 'recommendations', sessions }
 }
@@ -261,17 +295,44 @@ export default function App() {
   }
 
   // Keep the URL field showing the real resolved endpoint. Pages tracks the
-  // page key live; other presets are populated once (so edited legacy query
-  // params aren't clobbered when switching solutions). Custom is left alone.
+  // page key live; other presets are populated once (legacy ones then follow
+  // their parameters via setBody). Custom is left alone.
   useEffect(() => {
     if (preset === 'custom') return
     if (PRESETS[preset].needsKey) {
       patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
     } else if (!cur.url) {
-      patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
+      patch({ url: resolveUrl(preset, cur.pagesKey, BASES, cur.body) ?? '' })
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [preset, cur.pagesKey])
+
+  const isLegacy = !!PRESETS[preset]?.legacy
+
+  // Legacy: editing the parameters rebuilds the URL. While they don't parse
+  // (e.g. mid-paste) the URL is left as it was.
+  function setBody(body) {
+    if (!isLegacy) return patch({ body })
+    const url = resolveUrl(preset, cur.pagesKey, BASES, body)
+    patch(url == null ? { body } : { body, url })
+  }
+
+  // ...and editing the URL by hand writes its parameters back to the editor,
+  // so the two never disagree about what will be sent.
+  function setUrl(url) {
+    if (!isLegacy || !url.includes('?')) return patch({ url })
+    patch({ url, body: paramsFromUrl(url) })
+  }
+
+  const paramsError = useMemo(() => {
+    if (!isLegacy) return null
+    try {
+      parseParams(cur.body)
+      return null
+    } catch (e) {
+      return e.message
+    }
+  }, [isLegacy, cur.body])
 
   // Persist each solution's data so it survives switching solutions, reloads,
   // and relaunching the app (localStorage = kept until explicitly cleared).
@@ -307,11 +368,18 @@ export default function App() {
     return () => window.removeEventListener('pagehide', persist)
   }, [persist])
 
+  // Legacy parameters may be pasted as a query string or URL; formatting turns
+  // them into JSON like the rest.
   function formatBody() {
     try {
-      patch({ body: JSON.stringify(JSON.parse(cur.body), null, 2), error: null })
+      const body = JSON.stringify(isLegacy ? parseParams(cur.body) : JSON.parse(cur.body), null, 2)
+      patch(
+        isLegacy
+          ? { body, url: resolveUrl(preset, cur.pagesKey, BASES, body), error: null }
+          : { body, error: null },
+      )
     } catch (e) {
-      patch({ error: `Body is not valid JSON: ${e.message}` })
+      patch({ error: `${isLegacy ? 'Parameters are' : 'Body is'} not valid: ${e.message}` })
     }
   }
 
@@ -405,7 +473,8 @@ export default function App() {
       method: e.method,
       url: e.url,
       pagesKey: e.pagesKey,
-      body: e.body,
+      // Legacy entries from before the parameters editor only have a URL.
+      body: !e.body && isLegacy ? paramsFromUrl(e.url) : e.body,
       headers: e.headers,
       error: null,
     })
@@ -446,7 +515,7 @@ export default function App() {
   const history = cur.history || []
   const viewed = history.find((h) => h.id === cur.viewId) || history[0] || null
   const resp = viewed?.resp || null
-  const displayError = cur.error || viewed?.error || null
+  const apiError = useMemo(() => responseError(resp), [resp])
 
   const payload = resp?.json
   // Products come back as one or more "boxes" (recoms can request several at
@@ -565,7 +634,7 @@ export default function App() {
               className="url"
               value={cur.url}
               placeholder="https://api.helloretail.com/..."
-              onChange={(e) => patch({ url: e.target.value })}
+              onChange={(e) => setUrl(e.target.value)}
             />
             {loading ? (
               <button className="send cancel" onClick={() => abortRef.current?.abort()}>
@@ -591,14 +660,22 @@ export default function App() {
           )}
 
           <label className="lbl">
-            Body (JSON) <button className="link" onClick={formatBody}>format</button>
+            {isLegacy ? 'Parameters (JSON from the API log, or a query string)' : 'Body (JSON)'}{' '}
+            <button className="link" onClick={formatBody}>format</button>
           </label>
+          {isLegacy && (
+            <div className={paramsError ? 'hint bad' : 'hint'}>
+              {paramsError
+                ? `Can't read parameters (${paramsError}) — URL not updated.`
+                : 'Added to the URL as you type (format=json is added automatically).'}
+            </div>
+          )}
           <textarea
             ref={bodyRef}
             className="code"
             value={cur.body}
             spellCheck={false}
-            onChange={(e) => patch({ body: e.target.value })}
+            onChange={(e) => setBody(e.target.value)}
             style={{ height: bodyHeight }}
             onMouseUp={(e) => {
               // Keep the dragged height; drop any dragged width so the editor
@@ -664,7 +741,9 @@ export default function App() {
                       onClick={() => viewEntry(h.id)}
                       title={`${h.method} ${h.url}`}
                     >
-                      <span className={h.resp?.ok ? 'sdot ok' : 'sdot bad'} />
+                      <span
+                        className={h.resp?.ok && !responseError(h.resp) ? 'sdot ok' : 'sdot bad'}
+                      />
                       <span className="hist-status">{h.resp?.status ?? 'ERR'}</span>
                       <span className="hist-sum">{entrySummary(h)}</span>
                       <span className="hist-time">{new Date(h.ts).toLocaleTimeString()}</span>
@@ -698,11 +777,12 @@ export default function App() {
           <div className="row statusbar">
             {resp && (
               <>
-                <span className={resp.ok ? 'badge ok' : 'badge bad'}>
-                  {resp.status} {resp.statusText}
+                <span className={resp.ok && !apiError ? 'badge ok' : 'badge bad'}>
+                  {`${resp.status} ${resp.statusText}`.trim()}
+                  {resp.ok && apiError ? ' · error in body' : ''}
                 </span>
                 <span className="hint">{resp.durationMs} ms</span>
-                {usedPath !== undefined && payload && (
+                {usedPath !== undefined && payload && !apiError && (
                   <span className="hint">
                     {filterText.trim() ? `${shownTiles} / ${totalTiles}` : totalTiles} tiles
                     {bannerCount ? ` · ${bannerCount} banner${bannerCount > 1 ? 's' : ''}` : ''}
@@ -743,11 +823,25 @@ export default function App() {
           </div>
 
           <div className="results-body">
-          {displayError && <div className="error">{displayError}</div>}
+          {cur.error && <div className="error">{cur.error}</div>}
 
-          {!resp && !displayError && <div className="empty">Send a request to see results.</div>}
+          {/* Failed requests: the error replaces the products, so it can be
+              read without switching to the json tab. */}
+          {viewed?.error && <ErrorCard title="Request failed" message={viewed.error} />}
+          {tab === 'tiles' && apiError && (
+            <ErrorCard
+              title={`Request failed · HTTP ${resp.status}`}
+              code={apiError.code}
+              message={apiError.message}
+              detail={apiError.detail}
+            />
+          )}
 
-          {tab === 'tiles' && resp && (
+          {!resp && !viewed?.error && !cur.error && (
+            <div className="empty">Send a request to see results.</div>
+          )}
+
+          {tab === 'tiles' && resp && !apiError && (
             <>
               {totalTiles > 0 && (
                 <div className="row filterbar">
@@ -912,6 +1006,21 @@ function writeClipboard(value) {
     document.body.removeChild(ta)
     ok ? resolve() : reject(new Error('copy rejected'))
   })
+}
+
+function ErrorCard({ title, code, message, detail }) {
+  return (
+    <div className="errcard">
+      <div className="errcard-head">
+        <span className="errcard-title">{title}</span>
+        {code && <span className="errcard-code">{code}</span>}
+        <div className="spacer" />
+        {detail && <CopyButton label="copy error" title="Copy the error response" text={detail} />}
+      </div>
+      <div className="errcard-msg">{message || 'No error message in the response.'}</div>
+      {detail && <pre className="code view sm">{detail}</pre>}
+    </div>
+  )
 }
 
 // `text` is a function so a large response is only serialized on click, not on

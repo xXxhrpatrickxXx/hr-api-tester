@@ -118,8 +118,18 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .badge.ok { background: #0f2a17; color: #4ac26b; }
 .badge.bad { background: #2a0f12; color: #ff707a; }
 .hint { color: var(--muted); font-size: 12px; }
+.hint.bad { color: #ff9aa2; }
 
 .error { background: #2a0f12; color: #ff9aa2; border: 1px solid #5a1a20; border-radius: 8px; padding: 10px; margin-bottom: 12px; font-size: 13px; }
+.errcard {
+  background: #2a0f12; border: 1px solid #5a1a20; border-left: 4px solid var(--bad);
+  border-radius: 8px; padding: 14px 16px; margin-bottom: 12px;
+}
+.errcard-head { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 8px; }
+.errcard-title { color: #ff9aa2; font-size: 14px; font-weight: 600; }
+.errcard-code { background: #5a1a20; color: #ffd7da; border-radius: 6px; padding: 2px 7px; font-size: 12px; font-family: ui-monospace, monospace; }
+.errcard-msg { color: #ffe3e5; font-size: 17px; line-height: 1.4; word-break: break-word; }
+.errcard .code.view { margin-top: 12px; }
 .empty { color: var(--muted); padding: 30px; text-align: center; font-size: 13px; }
 
 .filterbar { margin-bottom: 12px; }

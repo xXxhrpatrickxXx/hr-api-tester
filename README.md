@@ -33,3 +33,5 @@ The API key and `websiteUuid` vary per request, so they are **not** stored anywh
 - **Real-time filtering** — filter products by any field, or a specific field.
 - **Recommendations step grouping** — products are grouped by their `countAfterSource` waterfall step, each boxed with a colored header.
 - **Tile mapping** — auto-detects the product array and maps the standard fields (`title`, `imgUrl`, `productNumber`, `price`, `oldPrice`, `url`); override under **Tile mapping** for non-standard responses.
+- **Legacy parameters** — for Recoms (legacy) / Search (legacy), paste the Parameters JSON from the API log (or its query-string Body, or a full URL); the request URL is rebuilt from it as you type, and editing the URL writes back to the parameters.
+- **Readable errors** — a failed request shows its error (status, code, message and the full error response) in place of the products. Legacy endpoints answer HTTP 200 with `{"error": ...}`, so those are caught from the body too.
