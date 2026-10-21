@@ -286,10 +286,21 @@ function assignSteps(tiles, steps) {
   }
 }
 
+// One box from a products array and its sibling countAfterSource.
+function toBox(key, products, countAfterSource, fieldMap) {
+  const tiles = products
+    .filter((x) => x && typeof x === 'object')
+    .map((x, n) => toTile(x, fieldMap, n + 1))
+  const steps = parseCountAfterSource(countAfterSource)
+  assignSteps(tiles, steps)
+  return { key, tiles, steps }
+}
+
 // Extract products grouped into "boxes". Recommendations can request several
 // boxes at once, returning responses[] where each entry is its own box with its
-// own products + countAfterSource — each becomes a box. Everything else is a
-// single box. Returns { boxes: [{ key, tiles, steps }], usedPath }.
+// own products + countAfterSource — each becomes a box. Legacy recoms do the
+// same as result: { [boxId]: { result: [...], countAfterSource } }. Everything
+// else is a single box. Returns { boxes: [{ key, tiles, steps }], usedPath }.
 export function extractResult(response, productsPath, fieldMap) {
   if (!response) return { boxes: [], usedPath: '' }
 
@@ -301,15 +312,25 @@ export function extractResult(response, productsPath, fieldMap) {
   ) {
     const boxes = response.responses
       .filter((r) => r && Array.isArray(r.products))
-      .map((r, i) => {
-        const tiles = r.products
-          .filter((x) => x && typeof x === 'object')
-          .map((x, n) => toTile(x, fieldMap, n + 1))
-        const steps = parseCountAfterSource(r.countAfterSource)
-        assignSteps(tiles, steps)
-        return { key: r.key || r.trackingKey || `Box ${i + 1}`, tiles, steps }
-      })
+      .map((r, i) =>
+        toBox(r.key || r.trackingKey || `Box ${i + 1}`, r.products, r.countAfterSource, fieldMap),
+      )
     return { boxes, usedPath: 'responses[].products' }
+  }
+
+  // Legacy recoms (getProductBoxes): one entry per requested box id.
+  const legacy = response.result
+  if (
+    !productsPath &&
+    legacy &&
+    typeof legacy === 'object' &&
+    !Array.isArray(legacy) &&
+    Object.values(legacy).some((b) => b && Array.isArray(b.result))
+  ) {
+    const boxes = Object.entries(legacy)
+      .filter(([, b]) => b && Array.isArray(b.result))
+      .map(([id, b]) => toBox(id, b.result, b.countAfterSource, fieldMap))
+    return { boxes, usedPath: 'result[boxId].result' }
   }
 
   const { tiles, usedPath, steps } = extractTiles(response, productsPath, fieldMap)
