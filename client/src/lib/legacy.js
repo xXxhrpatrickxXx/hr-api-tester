@@ -3,6 +3,13 @@
 // object, so these helpers convert between the two: paste the logged
 // parameters, get the request URL (and back again when the URL is edited).
 
+// encodeURIComponent, but leave characters that are harmless in a query string
+// readable: brackets in `crawledData[id][productNumbers][]`, commas in `ids`,
+// and `:` `/` `@` in URL values. fetch sends them as-is too. Anything that
+// would change how the query parses (& = # + % space) stays escaped.
+const encode = (s) =>
+  encodeURIComponent(s).replace(/%(5B|5D|2C|3A|2F|40)/gi, (m) => decodeURIComponent(m))
+
 // Encode a parameter object as a query string, jQuery.param style (matches
 // the log's "Body"): arrays become `key[]=v`, nested objects `key[sub]=v`,
 // everything else is stringified.
@@ -14,7 +21,7 @@ export function toQuery(params) {
     } else if (val !== null && typeof val === 'object') {
       for (const [k, v] of Object.entries(val)) add(`${key}[${k}]`, v)
     } else {
-      parts.push(`${encodeURIComponent(key)}=${encodeURIComponent(val ?? '')}`)
+      parts.push(`${encode(key)}=${encode(val ?? '')}`)
     }
   }
   for (const [k, v] of Object.entries(params)) add(k, v)
