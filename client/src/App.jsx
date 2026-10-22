@@ -375,16 +375,31 @@ export default function App() {
   // Legacy parameters may be pasted as a query string or URL; formatting turns
   // them into JSON like the rest.
   function formatBody() {
+    let body
     try {
-      const body = JSON.stringify(isLegacy ? parseParams(cur.body) : JSON.parse(cur.body), null, 2)
-      patch(
-        isLegacy
-          ? { body, url: resolveUrl(preset, cur.pagesKey, BASES, body), error: null }
-          : { body, error: null },
-      )
+      body = JSON.stringify(isLegacy ? parseParams(cur.body) : JSON.parse(cur.body), null, 2)
     } catch (e) {
       patch({ error: `${isLegacy ? 'Parameters are' : 'Body is'} not valid: ${e.message}` })
+      return
     }
+    patch({ error: null })
+    // Goes through the editor's onChange (setBody), which also rebuilds the
+    // legacy URL.
+    if (!replaceEditorText(bodyRef.current, body)) setBody(body)
+  }
+
+  const headersRef = useRef(null)
+  function formatHeaders() {
+    if (!cur.headers.trim()) return
+    let headers
+    try {
+      headers = JSON.stringify(JSON.parse(cur.headers), null, 2)
+    } catch (e) {
+      patch({ error: `Headers are not valid JSON: ${e.message}` })
+      return
+    }
+    patch({ error: null })
+    if (!replaceEditorText(headersRef.current, headers)) patch({ headers })
   }
 
   async function send() {
@@ -581,6 +596,7 @@ export default function App() {
       <header className="topbar">
         <h1>Hello Retail · API Tester</h1>
         <span className="hint">calls core.helloretail.com directly</span>
+        <ThemeToggle />
       </header>
 
       {isMobile && (
@@ -663,10 +679,12 @@ export default function App() {
             </>
           )}
 
-          <label className="lbl">
-            {isLegacy ? 'Parameters (JSON from the API log, or a query string)' : 'Body (JSON)'}{' '}
-            <button className="link" onClick={formatBody}>format</button>
-          </label>
+          <div className="edhead">
+            <label className="lbl">
+              {isLegacy ? 'Parameters (JSON from the API log, or a query string)' : 'Body (JSON)'}
+            </label>
+            <FormatButton onClick={formatBody} />
+          </div>
           {isLegacy && (
             <div className={paramsError ? 'hint bad' : 'hint'}>
               {paramsError
@@ -680,6 +698,7 @@ export default function App() {
             value={cur.body}
             spellCheck={false}
             onChange={(e) => setBody(e.target.value)}
+            onKeyDown={(e) => isFormatShortcut(e) && (e.preventDefault(), formatBody())}
             style={{ height: bodyHeight }}
             onMouseUp={(e) => {
               // Keep the dragged height; drop any dragged width so the editor
@@ -692,11 +711,17 @@ export default function App() {
 
           <details>
             <summary>Headers</summary>
+            <div className="edhead">
+              <label className="lbl">Headers (JSON)</label>
+              <FormatButton onClick={formatHeaders} />
+            </div>
             <textarea
+              ref={headersRef}
               className="code"
               value={cur.headers}
               spellCheck={false}
               onChange={(e) => patch({ headers: e.target.value })}
+              onKeyDown={(e) => isFormatShortcut(e) && (e.preventDefault(), formatHeaders())}
               rows={4}
             />
           </details>
@@ -1016,6 +1041,36 @@ function TileGroups({ tiles, steps, grouped, colors }) {
 // Clipboard write. navigator.clipboard needs a secure context (https or
 // localhost, both of which we have), but fall back to the old selection trick
 // rather than failing outright.
+function FormatButton({ onClick }) {
+  return (
+    <button className="chip sm fmt" onClick={onClick} title="Format JSON (Shift+Alt+F in the editor)">
+      Format <kbd>Shift+Alt+F</kbd>
+    </button>
+  )
+}
+
+// Shift+Alt+F, as in VS Code. Matched on the physical key so it also works on
+// macOS, where Option+F types a character instead of "f".
+function isFormatShortcut(e) {
+  return e.shiftKey && e.altKey && !e.ctrlKey && !e.metaKey && e.code === 'KeyF'
+}
+
+// Replace a textarea's whole text as if typed, so Ctrl+Z undoes the format and
+// React's onChange fires as usual. Returns false where execCommand is
+// unsupported; the caller then sets the state directly (no undo step).
+function replaceEditorText(el, text) {
+  if (!el || el.value === text) return Boolean(el)
+  const { scrollTop } = el
+  el.focus()
+  el.select()
+  const ok = document.execCommand('insertText', false, text)
+  if (ok) {
+    el.setSelectionRange(0, 0)
+    el.scrollTop = Math.min(scrollTop, el.scrollHeight)
+  }
+  return ok
+}
+
 function writeClipboard(value) {
   if (navigator.clipboard?.writeText) return navigator.clipboard.writeText(value)
   return new Promise((resolve, reject) => {
@@ -1044,6 +1099,48 @@ function ErrorCard({ title, code, message, detail }) {
       <div className="errcard-msg">{message || 'No error message in the response.'}</div>
       {detail && <pre className="code view sm">{detail}</pre>}
     </div>
+  )
+}
+
+// Theme choice: 'auto' follows the OS (dark when it states no preference),
+// 'light' / 'dark' pin it. index.html applies it before first paint; this keeps
+// <html data-theme> in sync afterwards, including OS changes while on auto.
+const THEME_KEY = 'hr-api-tester:theme'
+const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' }
+const THEME_LABEL = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }
+
+function ThemeToggle() {
+  const [mode, setMode] = useState(() => {
+    try {
+      const t = localStorage.getItem(THEME_KEY)
+      return t === 'light' || t === 'dark' ? t : 'auto'
+    } catch {
+      return 'auto'
+    }
+  })
+  useEffect(() => {
+    try {
+      if (mode === 'auto') localStorage.removeItem(THEME_KEY)
+      else localStorage.setItem(THEME_KEY, mode)
+    } catch {}
+    const mq = window.matchMedia('(prefers-color-scheme: light)')
+    const apply = () => {
+      const theme = mode === 'auto' ? (mq.matches ? 'light' : 'dark') : mode
+      document.documentElement.dataset.theme = theme
+    }
+    apply()
+    if (mode !== 'auto') return
+    mq.addEventListener('change', apply)
+    return () => mq.removeEventListener('change', apply)
+  }, [mode])
+  return (
+    <button
+      className="chip sm theme"
+      onClick={() => setMode(THEME_NEXT[mode])}
+      title={`Theme: ${mode}${mode === 'auto' ? ' (follows system)' : ''}. Click to switch.`}
+    >
+      {THEME_LABEL[mode]}
+    </button>
   )
 }
 

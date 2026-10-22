@@ -3,7 +3,19 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
     <title>Hello Retail API Tester</title>
+    <script>
+      // Apply the theme before first paint so there is no flash of the wrong
+      // one. Saved choice wins; otherwise follow the OS, defaulting to dark.
+      try {
+        var t = localStorage.getItem('hr-api-tester:theme')
+        if (t !== 'light' && t !== 'dark') {
+          t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
+        }
+        document.documentElement.dataset.theme = t
+      } catch (e) {}
+    </script>
   </head>
   <body>
     <div id="root"></div>
