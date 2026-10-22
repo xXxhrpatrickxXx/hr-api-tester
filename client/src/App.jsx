@@ -1,5 +1,5 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { extractResult, findArrayPaths, DEFAULT_FIELD_MAP } from './lib/products.js'
+import { extractResult, findArrayPaths, pageInfo, DEFAULT_FIELD_MAP } from './lib/products.js'
 import { buildLegacyUrl, paramsFromUrl, parseParams } from './lib/legacy.js'
 
 // Request templates per API. The endpoint is resolved client-side from BASES
@@ -97,6 +97,7 @@ function blankSession(presetKey) {
     fieldMap: DEFAULT_FIELD_MAP,
     history: [], // newest first; each entry is a request + its response
     viewId: null, // which history entry the results panel is showing
+    tab: 'tiles', // results view (tiles / json / headers), kept across requests
     error: null, // transient validation error (not a sent request)
   }
 }
@@ -209,7 +210,10 @@ export default function App() {
   const cur = sessions[preset]
 
   const [loading, setLoading] = useState(false)
-  const [tab, setTab] = useState('tiles')
+  // Each solution remembers its own results view, so sending or stepping
+  // through history stays on JSON (say) instead of jumping back to tiles.
+  const tab = cur.tab || 'tiles'
+  const setTab = (t) => patch({ tab: t })
 
   // On narrow screens the side-by-side columns don't fit, so the request and
   // results panes become tabs and only one is shown at a time.
@@ -459,7 +463,6 @@ export default function App() {
       const history = [entry, ...(sess.history || [])].slice(0, MAX_HISTORY)
       return { ...s, [preset]: { ...sess, history, viewId: entry.id, error: null } }
     })
-    setTab('tiles')
     setLoading(false)
     if (isMobile) setMobilePane('results')
   }
@@ -478,7 +481,6 @@ export default function App() {
       headers: e.headers,
       error: null,
     })
-    setTab('tiles')
   }
 
   function toggleLock(id) {
@@ -524,6 +526,8 @@ export default function App() {
     () => extractResult(payload, cur.productsPath, cur.fieldMap),
     [payload, cur.productsPath, cur.fieldMap],
   )
+  // Search / Pages: which slice of the full result set this response is.
+  const paging = useMemo(() => pageInfo(payload), [payload])
   const allTiles = useMemo(() => boxes.flatMap((b) => b.tiles), [boxes])
   const anySteps = useMemo(() => boxes.some((b) => b.steps.length > 0), [boxes])
   const stepColors = useMemo(() => stepColorMap(boxes), [boxes])
@@ -843,6 +847,7 @@ export default function App() {
 
           {tab === 'tiles' && resp && !apiError && (
             <>
+              {paging && <PageInfo {...paging} />}
               {totalTiles > 0 && (
                 <div className="row filterbar">
                   <input
@@ -926,6 +931,25 @@ export default function App() {
           </div>
         </section>
       </div>
+    </div>
+  )
+}
+
+// Thousands grouped with a narrow no-break space (1 240), so the separator
+// reads as whitespace but never wraps mid-number.
+const groupDigits = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
+
+// "Showing 51–60 of 206 results" for a Search / Pages response; `start` is the
+// 0-based offset, so the first product shown is start + 1. Nothing when the
+// response has no products (the "No products found" notice covers that).
+function PageInfo({ start, shown, total }) {
+  if (shown === 0) return null
+  const first = start + 1
+  const last = start + shown
+  return (
+    <div className="pageinfo">
+      Showing <b>{groupDigits(first)}{last > first ? `–${groupDigits(last)}` : ''}</b> of{' '}
+      <b>{groupDigits(total)}</b> result{total === 1 ? '' : 's'}
     </div>
   )
 }

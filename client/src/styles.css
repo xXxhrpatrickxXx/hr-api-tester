@@ -133,6 +133,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .empty { color: var(--muted); padding: 30px; text-align: center; font-size: 13px; }
 
 .filterbar { margin-bottom: 12px; }
+.pageinfo { font-size: 13px; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+.pageinfo b { color: var(--text); font-weight: 700; }
 .grouptoggle { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .grid .empty { grid-column: 1 / -1; }

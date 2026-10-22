@@ -286,6 +286,35 @@ function assignSteps(tiles, steps) {
   }
 }
 
+// Pagination of a Search / Pages response: { start, shown, total }, or null
+// when the response carries no total (recoms, custom shapes). The field names
+// differ per API:
+//   Search:         products.{ start, totalCount, results }
+//   Pages:          products.{ start, total, result }
+//   Search legacy:  { product_start, product_results, result }
+// `shown` counts products only: retail media banners take a slot in the array
+// but not in `start`/total, so counting them would shift the range.
+export function pageInfo(response) {
+  if (!response || typeof response !== 'object') return null
+  const p = response.products
+  let start, total, arr
+  if (p && typeof p === 'object' && !Array.isArray(p) && (typeof p.totalCount === 'number' || typeof p.total === 'number')) {
+    start = p.start
+    total = p.totalCount ?? p.total
+    arr = p.results ?? p.result
+  } else if (typeof response.product_results === 'number') {
+    start = response.product_start ?? response.start
+    total = response.product_results
+    arr = response.result
+  } else {
+    return null
+  }
+  const shown = Array.isArray(arr)
+    ? arr.filter((x) => x && typeof x === 'object' && x.isBanner !== true).length
+    : 0
+  return { start: Number(start) || 0, shown, total }
+}
+
 // One box from a products array and its sibling countAfterSource.
 function toBox(key, products, countAfterSource, fieldMap) {
   const tiles = products
