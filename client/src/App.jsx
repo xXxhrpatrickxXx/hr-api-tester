@@ -531,6 +531,18 @@ export default function App() {
 
   const history = cur.history || []
   const viewed = history.find((h) => h.id === cur.viewId) || history[0] || null
+
+  // Arrow keys step through history while a row has focus; focus follows.
+  function onHistKey(e) {
+    if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    e.preventDefault()
+    const i = history.findIndex((h) => h.id === viewed?.id)
+    const j = Math.min(history.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)))
+    const next = history[j]
+    if (!next) return
+    if (next.id !== viewed?.id) viewEntry(next.id)
+    e.currentTarget.querySelector(`[data-id="${next.id}"]`)?.focus()
+  }
   const resp = viewed?.resp || null
   const apiError = useMemo(() => responseError(resp), [resp])
 
@@ -762,13 +774,14 @@ export default function App() {
                 <span className="lbl">History · {history.length}</span>
                 <button className="link" onClick={clearHistory}>clear all</button>
               </div>
-              <ul className="hist-list">
+              <ul className="hist-list" onKeyDown={onHistKey}>
                 {history.map((h) => (
                   <li key={h.id} className={viewed?.id === h.id ? 'hist-row active' : 'hist-row'}>
                     <button
                       className="hist-main"
+                      data-id={h.id}
                       onClick={() => viewEntry(h.id)}
-                      title={`${h.method} ${h.url}`}
+                      title={`${h.method} ${h.url}\n↑/↓ to step through history`}
                     >
                       <span
                         className={h.resp?.ok && !responseError(h.resp) ? 'sdot ok' : 'sdot bad'}
