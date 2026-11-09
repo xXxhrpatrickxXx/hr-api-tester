@@ -29,7 +29,12 @@ The API key and `websiteUuid` vary per request, so they are **not** stored anywh
 
 ## Features
 
-- **Per-solution sessions & history** — each API keeps its own request form, page key, and a history of past requests/responses (persisted in `localStorage`). Lock entries to protect them from "clear all".
+- **Per-solution sessions & history** — each API keeps its own request form, page key, and a history of up to 100 past requests/responses (persisted in IndexedDB). Lock entries to protect them from "clear all", add a note to label them, search the list, and step through it with ↑/↓.
+- **Export / import history** — saved history belongs to the site address (the hosted app, `:5173` and `:8787` each have their own), so export it as JSON to back it up or move it between them. Importing merges, skipping entries already there.
+- **Paging** — Search, Pages and Search (legacy) results get prev / next buttons that move the request's offset (`products.start` / `product_start`) and resend it.
+- **API log tag** — an optional tag added as `?apiLogTag=…` to every request to `core.helloretail.com`, so your test calls are easy to find in the API log ("only tagged"). API logging has to be on for the website.
+- **Ctrl+Enter** sends the request from anywhere.
+- **Extra tile fields** — under **Tile mapping**, list extra product fields (dot paths work) to show on every tile, e.g. `inStock, brand`.
 - **Real-time filtering** — filter products by any field, or a specific field.
 - **Recommendations step grouping** — products are grouped by their `countAfterSource` waterfall step, each boxed with a colored header.
 - **Tile mapping** — auto-detects the product array and maps the standard fields (`title`, `imgUrl`, `productNumber`, `price`, `oldPrice`, `url`); override under **Tile mapping** for non-standard responses.

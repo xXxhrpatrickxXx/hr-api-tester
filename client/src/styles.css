@@ -26,6 +26,9 @@
   --bad-chip-text: #ffd7da;
   --bad-strong: #ffe3e5;
   --noimg: #9aa;
+  --border-strong: #4a5263;
+  --hover-bg: #272c37;
+  --accent-hover: #8fbcff;
 }
 
 /* Set on <html> by the inline script in index.html (before first paint) and
@@ -58,6 +61,9 @@
   --bad-chip-text: #82071e;
   --bad-strong: #4c0a12;
   --noimg: #8a929e;
+  --border-strong: #aeb6c2;
+  --hover-bg: #e2e6ec;
+  --accent-hover: #1d4ed8;
 }
 
 * { box-sizing: border-box; }
@@ -139,6 +145,24 @@ body {
 /* Full-bleed JSON/headers view; the per-tile raw view (.sm) stays compact. */
 .code.view:not(.sm) { width: 100%; height: 100%; max-height: none; }
 .code.view.sm { max-height: 240px; font-size: 11.5px; }
+/* JSON / headers view with its copy button pinned top-right (clear of the
+   scrollbar), staying put while the text scrolls under it. */
+.codewrap { position: relative; height: 100%; }
+/* Solid, full-contrast surface with a lifted shadow so it reads as a control
+   on top of the text, not part of it. */
+.copyfloat {
+  position: absolute; top: 10px; right: 22px;
+  display: inline-flex; align-items: center; gap: 6px;
+  background: var(--panel); color: var(--text);
+  border: 1px solid var(--border-strong); border-radius: 6px;
+  padding: 5px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 3px 10px rgba(0, 0, 0, .18);
+  transition: border-color .12s, background .12s, color .12s;
+}
+.copyfloat:hover { border-color: var(--accent); color: var(--accent); }
+.copyfloat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.copyfloat[data-state="ok"] { background: var(--ok-bg); color: var(--ok-text); border-color: var(--ok); }
+.copyfloat[data-state="err"] { background: var(--bad-bg); color: var(--bad-text); border-color: var(--bad); }
 
 details { margin-bottom: 10px; }
 summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
@@ -166,6 +190,15 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .hist-act { background: none; border: 0; color: var(--muted); cursor: pointer; padding: 4px 6px; font-size: 12px; border-radius: 4px; }
 .hist-act:hover { color: var(--text); background: var(--border); }
 .hist-act.on { filter: none; }
+.hist-head { gap: 10px; }
+.hist-search { display: block; width: 100%; margin-bottom: 8px; padding: 5px 8px; font-size: 12px; }
+.hist-head + .hint { margin-bottom: 8px; }
+/* A note of your own replaces the generated summary. */
+.hist-sum.note { font-weight: 600; }
+
+/* API log tag: label inline with its input. */
+.logtag .lbl { margin: 0; white-space: nowrap; cursor: help; }
+.logtag .url { padding: 5px 8px; font-size: 12px; }
 
 .sdot { display: inline-block; width: 7px; height: 7px; border-radius: 50%; flex: 0 0 auto; }
 .sdot.ok { background: var(--ok); }
@@ -191,8 +224,19 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .empty { color: var(--muted); padding: 30px; text-align: center; font-size: 13px; }
 
 .filterbar { margin-bottom: 12px; }
-.pageinfo { font-size: 13px; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums; }
+.pageinfo {
+  font-size: 13px; color: var(--muted); margin-bottom: 10px; font-variant-numeric: tabular-nums;
+  display: flex; align-items: center; flex-wrap: wrap; gap: 6px 12px;
+}
 .pageinfo b { color: var(--text); font-weight: 700; }
+.pager { display: inline-flex; gap: 6px; }
+.chip:disabled { opacity: .45; cursor: default; }
+
+/* Extra product fields on a tile, one "key value" line each. */
+.xfields { display: flex; flex-direction: column; gap: 2px; font-size: 11px; }
+.xf { display: flex; gap: 6px; min-width: 0; }
+.xk { color: var(--muted); flex: 0 0 auto; max-width: 50%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.xv { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-variant-numeric: tabular-nums; }
 .grouptoggle { display: flex; align-items: center; gap: 5px; font-size: 12px; color: var(--muted); white-space: nowrap; cursor: pointer; }
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 12px; }
 .grid .empty { grid-column: 1 / -1; }
@@ -298,4 +342,34 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
   border-radius: 5px; padding: 1px 5px;
   font-size: 10px; font-weight: 700; letter-spacing: .02em;
   text-transform: uppercase; pointer-events: none;
+}
+
+/* ---- Interaction states ----
+   Every clickable thing reacts to hover and shows a focus ring for keyboard
+   users. Hover only applies on devices with a real pointer, so a tap on a
+   touch screen doesn't leave a control stuck in its hover look. */
+.chip, .send, .link, .method, .hist-row, .hist-act, summary, .grouptoggle {
+  transition: background-color .12s, border-color .12s, color .12s, box-shadow .12s;
+}
+
+@media (hover: hover) {
+  .chip:not(.active):not(:disabled):hover {
+    color: var(--text); border-color: var(--border-strong); background: var(--hover-bg);
+  }
+  .chip.active:hover { box-shadow: 0 0 0 1px var(--accent); }
+  .send:not(:disabled):hover { background: var(--accent-hover); }
+  .send.cancel:hover { background: var(--bad); filter: brightness(1.12); }
+  .link:hover { text-decoration: underline; text-underline-offset: 2px; }
+  .method:hover { border-color: var(--border-strong); }
+  .hist-row:not(.active):hover { border-color: var(--border-strong); background: var(--hover-bg); }
+  summary:hover, .grouptoggle:hover { color: var(--text); }
+}
+
+.chip:focus-visible, .send:focus-visible, .link:focus-visible, .method:focus-visible,
+.hist-main:focus-visible, .hist-act:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--accent); outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * { transition: none !important; }
 }
