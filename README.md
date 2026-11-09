@@ -34,6 +34,7 @@ The API key and `websiteUuid` vary per request, so they are **not** stored anywh
 - **Paging** — Search, Pages and Search (legacy) results get prev / next buttons that move the request's offset (`products.start` / `product_start`) and resend it.
 - **API log tag** — an optional tag added as `?apiLogTag=…` to every request to `core.helloretail.com`, so your test calls are easy to find in the API log ("only tagged"). API logging has to be on for the website.
 - **Ctrl+Enter** sends the request from anywhere.
+- **Matrix mode** — the *Matrix* button in the top bar switches to a green-on-black look with digital rain behind the panels. Remembered across reloads.
 - **Extra tile fields** — under **Tile mapping**, list extra product fields (dot paths work) to show on every tile, e.g. `inStock, brand`.
 - **Real-time filtering** — filter products by any field, or a specific field.
 - **Recommendations step grouping** — products are grouped by their `countAfterSource` waterfall step, each boxed with a colored header.
