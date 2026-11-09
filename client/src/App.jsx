@@ -84,6 +84,7 @@ const STORAGE_KEY = 'hr-api-tester:v3'
 const MAX_HISTORY = 100 // per solution; bounds the persisted store's size
 const REQUEST_TIMEOUT_MS = 30000
 const LOG_TAG_KEY = 'hr-api-tester:logTag'
+const MATRIX_KEY = 'hr-api-tester:matrix'
 const TABS = ['tiles', 'json', 'headers'] // results views
 
 // Each preset (solution) keeps its own keys, body, settings, and a history of
@@ -347,6 +348,18 @@ function Tester({ initial, save }) {
 
   // In-flight request, so it can be cancelled (or timed out).
   const abortRef = useRef(null)
+
+  // Matrix mode: green-on-black look with digital rain behind the panels.
+  // index.html applies the saved choice before first paint.
+  const [matrix, setMatrix] = useState(() => document.documentElement.dataset.matrix === 'on')
+  useEffect(() => {
+    if (matrix) document.documentElement.dataset.matrix = 'on'
+    else delete document.documentElement.dataset.matrix
+    try {
+      if (matrix) localStorage.setItem(MATRIX_KEY, 'on')
+      else localStorage.removeItem(MATRIX_KEY)
+    } catch {}
+  }, [matrix])
 
   // API log tag, added to every request to Hello Retail. Shared by all
   // solutions and kept across sessions, like the layout preferences.
@@ -842,10 +855,21 @@ function Tester({ initial, save }) {
 
   return (
     <div className="app">
+      {matrix && <MatrixRain />}
       <header className="topbar">
         <h1>Hello Retail · API Tester</h1>
         <span className="hint">calls core.helloretail.com directly</span>
-        <ThemeToggle />
+        <div className="topbar-actions">
+          <button
+            className={matrix ? 'chip sm active' : 'chip sm'}
+            onClick={() => setMatrix((m) => !m)}
+            title={matrix ? 'Leave the Matrix' : 'Enter the Matrix'}
+          >
+            {matrix ? '◉ Matrix' : '○ Matrix'}
+          </button>
+          {/* Hidden while Matrix mode overrides the theme anyway. */}
+          {!matrix && <ThemeToggle />}
+        </div>
       </header>
 
       {isMobile && (
@@ -1497,6 +1521,73 @@ function ThemeToggle() {
       {THEME_LABEL[mode]}
     </button>
   )
+}
+
+// The falling-code background of Matrix mode: columns of half-width katakana
+// and digits dropping down a full-screen canvas, each frame drawn over a
+// translucent black so older glyphs fade into trails. Throttled to ~20 fps,
+// paused while the tab is hidden, and a single still frame when the system
+// asks for reduced motion.
+const RAIN_GLYPHS = 'ｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ0123456789:.=*+-<>¦'
+const RAIN_SIZE = 16 // px per glyph cell
+const RAIN_FPS = 20
+
+function MatrixRain() {
+  const ref = useRef(null)
+  useEffect(() => {
+    const canvas = ref.current
+    const ctx = canvas.getContext('2d')
+    const still = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+    let drops = []
+    let frame = 0
+    let last = 0
+
+    function resize() {
+      const dpr = window.devicePixelRatio || 1
+      canvas.width = window.innerWidth * dpr
+      canvas.height = window.innerHeight * dpr
+      ctx.setTransform(dpr, 0, 0, dpr, 0, 0)
+      ctx.fillStyle = '#000'
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight)
+      const rows = Math.ceil(window.innerHeight / RAIN_SIZE)
+      // Start each column at a random height so the rain doesn't begin as
+      // one flat line.
+      drops = Array.from({ length: Math.ceil(window.innerWidth / RAIN_SIZE) }, () =>
+        Math.floor(Math.random() * -rows),
+      )
+      if (still) for (let i = 0; i < 40; i++) draw()
+    }
+
+    function draw() {
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.08)'
+      ctx.fillRect(0, 0, window.innerWidth, window.innerHeight)
+      ctx.font = `${RAIN_SIZE}px ui-monospace, monospace`
+      const rows = window.innerHeight / RAIN_SIZE
+      drops.forEach((y, i) => {
+        const ch = RAIN_GLYPHS[Math.floor(Math.random() * RAIN_GLYPHS.length)]
+        // The leading glyph is near-white; the trail behind it is green.
+        ctx.fillStyle = Math.random() < 0.1 ? '#d6ffe0' : '#00ff41'
+        ctx.fillText(ch, i * RAIN_SIZE, y * RAIN_SIZE)
+        drops[i] = y > rows && Math.random() > 0.975 ? 0 : y + 1
+      })
+    }
+
+    function loop(t) {
+      frame = requestAnimationFrame(loop)
+      if (document.hidden || t - last < 1000 / RAIN_FPS) return
+      last = t
+      draw()
+    }
+
+    resize()
+    window.addEventListener('resize', resize)
+    if (!still) frame = requestAnimationFrame(loop)
+    return () => {
+      cancelAnimationFrame(frame)
+      window.removeEventListener('resize', resize)
+    }
+  }, [])
+  return <canvas ref={ref} className="matrix-rain" aria-hidden="true" />
 }
 
 // `text` is a function so a large response is only serialized on click, not on

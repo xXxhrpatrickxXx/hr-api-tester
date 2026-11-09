@@ -82,7 +82,7 @@ body {
   padding: 10px 16px; border-bottom: 1px solid var(--border);
 }
 .topbar h1 { font-size: 15px; margin: 0; font-weight: 600; }
-.topbar .theme { align-self: center; margin-left: auto; }
+.topbar-actions { align-self: center; margin-left: auto; display: flex; gap: 8px; }
 
 .layout { flex: 1; display: flex; min-height: 0; }
 
@@ -304,7 +304,7 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 
   /* Stack the method/URL/Send row so the URL is readable. */
   .request .row:has(> .send) { flex-wrap: wrap; }
-  .request .url { flex: 1 1 100%; order: -1; }
+  .request .row:has(> .send) .url { flex: 1 1 100%; order: -1; }
 
   /* Touch devices rarely have the shortcut, so just show "Format". */
   .chip.fmt kbd { display: none; }
@@ -372,4 +372,50 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; }
+}
+
+/* ---- Matrix mode ----
+   Toggled from the top bar; overrides either theme while on (declared after
+   the light theme, same specificity, so it wins). Panels are translucent so
+   the digital rain canvas shows through, but stay dark enough to read. */
+:root[data-matrix] {
+  color-scheme: dark;
+  --bg: rgba(0, 0, 0, .45);
+  --panel: rgba(0, 12, 3, .84);
+  --panel2: rgba(0, 26, 8, .9);
+  --border: #0e4a1c;
+  --border-strong: #1f8f3d;
+  --text: #4dff7c;
+  --muted: #22b34f;
+  --accent: #00ff41;
+  --accent-hover: #7dff9e;
+  --on-accent: #000;
+  --active-bg: #003d12;
+  --active-text: #c8ffd6;
+  --hover-bg: #00290b;
+  --ok: #00ff41;
+  --ok-bg: #002b0c;
+  --ok-text: #4dff7c;
+  --code-bg: rgba(0, 0, 0, .9);
+  --code-text: #4dff7c;
+  --noimg: #22b34f;
+}
+:root[data-matrix] body {
+  background: #000;
+  font-family: ui-monospace, "Cascadia Code", Menlo, Consolas, monospace;
+}
+:root[data-matrix] :is(button, input, select, textarea) { font-family: inherit; }
+:root[data-matrix] .app > :not(.matrix-rain) { position: relative; z-index: 1; }
+:root[data-matrix] .topbar { background: rgba(0, 0, 0, .7); }
+:root[data-matrix] .topbar h1,
+:root[data-matrix] .badge.ok,
+:root[data-matrix] .chip.active {
+  text-shadow: 0 0 6px rgba(0, 255, 65, .7);
+}
+:root[data-matrix] .send:not(.cancel) { box-shadow: 0 0 10px rgba(0, 255, 65, .45); }
+:root[data-matrix] .tile { box-shadow: 0 0 0 1px rgba(0, 255, 65, .08); }
+
+.matrix-rain {
+  position: fixed; inset: 0; width: 100vw; height: 100vh;
+  z-index: 0; pointer-events: none;
 }

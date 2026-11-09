@@ -14,6 +14,10 @@
           t = matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark'
         }
         document.documentElement.dataset.theme = t
+        // Matrix mode overrides the theme while it's on.
+        if (localStorage.getItem('hr-api-tester:matrix') === 'on') {
+          document.documentElement.dataset.matrix = 'on'
+        }
       } catch (e) {}
     </script>
   </head>
