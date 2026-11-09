@@ -1,6 +1,7 @@
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import { extractResult, findArrayPaths, pageInfo, DEFAULT_FIELD_MAP } from './lib/products.js'
+import { extractResult, findArrayPaths, getPath, pageInfo, DEFAULT_FIELD_MAP } from './lib/products.js'
 import { buildLegacyUrl, paramsFromUrl, parseParams } from './lib/legacy.js'
+import { createSaver, loadStore } from './lib/store.js'
 
 // Request templates per API. The endpoint is resolved client-side from BASES
 // so the URL field shows the real value. The websiteUuid / API key vary per
@@ -78,9 +79,12 @@ function resolveUrl(presetKey, pagesKey, bases, body) {
   return base
 }
 
+// Pre-IndexedDB store; read once to migrate, then removed.
 const STORAGE_KEY = 'hr-api-tester:v3'
-const MAX_HISTORY = 20 // per solution; bounds the persisted store's size
+const MAX_HISTORY = 100 // per solution; bounds the persisted store's size
 const REQUEST_TIMEOUT_MS = 30000
+const LOG_TAG_KEY = 'hr-api-tester:logTag'
+const TABS = ['tiles', 'json', 'headers'] // results views
 
 // Each preset (solution) keeps its own keys, body, settings, and a history of
 // past requests/responses so switching solutions never loses your work and you
@@ -95,6 +99,7 @@ function blankSession(presetKey) {
     headers: '{\n  "Content-Type": "application/json"\n}',
     productsPath: '',
     fieldMap: DEFAULT_FIELD_MAP,
+    tileFields: '', // extra product fields shown on each tile, comma-separated
     history: [], // newest first; each entry is a request + its response
     viewId: null, // which history entry the results panel is showing
     tab: 'tiles', // results view (tiles / json / headers), kept across requests
@@ -143,6 +148,57 @@ function responseError(resp) {
   }
 }
 
+const sendsBody = (method, body) => method !== 'GET' && method !== 'HEAD' && !!body?.trim()
+const hasContentType = (headers) => Object.keys(headers).some((h) => h.toLowerCase() === 'content-type')
+
+// apiLogTag marks a request in Hello Retail's API log (find them with "only
+// tagged"); it changes nothing about the response. Only HR's own endpoints know
+// it, and appended by hand so legacy URLs stay readable (URL() re-encodes them).
+function withLogTag(url, tag) {
+  if (!tag || /[?&]apiLogTag=/.test(url)) return url
+  try {
+    if (new URL(url).hostname !== 'core.helloretail.com') return url
+  } catch {
+    return url
+  }
+  return `${url}${url.includes('?') ? '&' : '?'}apiLogTag=${encodeURIComponent(tag)}`
+}
+
+// The request body for the previous (dir -1) or next (dir 1) page, or null
+// when the body has no offset to move. Search / Pages page with
+// products.{start,count}; legacy Search with product_{start,count}. Pages
+// paging keeps the product scope, so it sends firstLoad: false.
+function pageRequest(presetKey, body, paging, dir) {
+  if (!paging) return null
+  const step = (count, start) => {
+    const n = Number(count) || paging.shown
+    return n > 0 ? Math.max(0, start + dir * n) : null
+  }
+  try {
+    if (PRESETS[presetKey]?.legacy) {
+      const p = parseParams(body)
+      if (!('product_start' in p || 'product_count' in p)) return null
+      const start = step(p.product_count, paging.start)
+      return start == null ? null : JSON.stringify({ ...p, product_start: String(start) }, null, 2)
+    }
+    const b = JSON.parse(body)
+    if (!b?.products || typeof b.products !== 'object') return null
+    const start = step(b.products.count, paging.start)
+    if (start == null) return null
+    const next = { ...b, products: { ...b.products, start } }
+    if (presetKey === 'pages' || 'firstLoad' in b) next.firstLoad = false
+    return JSON.stringify(next, null, 2)
+  } catch {
+    return null
+  }
+}
+
+// Extra tile field values: objects as compact JSON, missing as a dash.
+function fieldText(v) {
+  if (v == null || v === '') return '—'
+  return typeof v === 'object' ? JSON.stringify(v) : String(v)
+}
+
 // Case-insensitive substring match against one field's value, recursing into
 // nested objects/arrays. "Any field" uses the tile's precomputed haystack
 // instead, so it doesn't re-walk every product on each keystroke.
@@ -183,13 +239,8 @@ const MOBILE_QUERY = '(max-width: 820px)'
 const MIN_LEFT = 280
 const maxLeft = () => Math.min(1400, window.innerWidth - 320)
 
-function loadState() {
-  let saved = {}
-  try {
-    saved = JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}
-  } catch {
-    saved = {}
-  }
+// Fill in defaults for anything the saved store lacks (new presets/fields).
+function loadState(saved) {
   const sessions = {}
   for (const key of Object.keys(PRESETS)) {
     sessions[key] = { ...blankSession(key), ...(saved.sessions?.[key] || {}) }
@@ -202,17 +253,62 @@ function loadState() {
   return { preset: saved.preset || 'recommendations', sessions }
 }
 
+function readLocalStore() {
+  try {
+    return JSON.parse(localStorage.getItem(STORAGE_KEY)) || {}
+  } catch {
+    return {}
+  }
+}
+
+// Loads the saved store (async: IndexedDB), migrating the old localStorage one
+// on first run. Memoised so it runs once even if the loader mounts twice.
+let bootPromise = null
+function boot() {
+  bootPromise ??= (async () => {
+    let initial
+    let save
+    try {
+      const stored = await loadStore()
+      initial = loadState(stored || readLocalStore())
+      if (stored) {
+        save = createSaver(initial)
+      } else {
+        save = createSaver(null)
+        await save(initial)
+        localStorage.removeItem(STORAGE_KEY)
+      }
+    } catch {
+      // No IndexedDB (e.g. some private modes): keep using localStorage.
+      initial ??= loadState(readLocalStore())
+      save = async (state) => localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
+    }
+    return { initial, save }
+  })()
+  return bootPromise
+}
+
 export default function App() {
-  // Lazy initialisers: loadState() parses the whole persisted store, so it must
-  // run once on mount — not on every render.
-  const [preset, setPreset] = useState(() => loadState().preset)
-  const [sessions, setSessions] = useState(() => loadState().sessions)
+  const [loaded, setLoaded] = useState(null)
+  useEffect(() => {
+    let cancelled = false
+    boot().then((l) => !cancelled && setLoaded(l))
+    return () => {
+      cancelled = true
+    }
+  }, [])
+  return loaded && <Tester initial={loaded.initial} save={loaded.save} />
+}
+
+function Tester({ initial, save }) {
+  const [preset, setPreset] = useState(initial.preset)
+  const [sessions, setSessions] = useState(initial.sessions)
   const cur = sessions[preset]
 
   const [loading, setLoading] = useState(false)
   // Each solution remembers its own results view, so sending or stepping
   // through history stays on JSON (say) instead of jumping back to tiles.
-  const tab = cur.tab || 'tiles'
+  const tab = TABS.includes(cur.tab) ? cur.tab : 'tiles'
   const setTab = (t) => patch({ tab: t })
 
   // On narrow screens the side-by-side columns don't fit, so the request and
@@ -251,6 +347,22 @@ export default function App() {
 
   // In-flight request, so it can be cancelled (or timed out).
   const abortRef = useRef(null)
+
+  // API log tag, added to every request to Hello Retail. Shared by all
+  // solutions and kept across sessions, like the layout preferences.
+  const [logTag, setLogTag] = useState(() => {
+    try {
+      return localStorage.getItem(LOG_TAG_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  useEffect(() => {
+    try {
+      if (logTag) localStorage.setItem(LOG_TAG_KEY, logTag)
+      else localStorage.removeItem(LOG_TAG_KEY)
+    } catch {}
+  }, [logTag])
 
   // Dragging the editor's corner sideways widens the config column instead of
   // the editor itself: the column grows to fit, then the editor snaps back to
@@ -339,9 +451,8 @@ export default function App() {
   }, [isLegacy, cur.body])
 
   // Persist each solution's data so it survives switching solutions, reloads,
-  // and relaunching the app (localStorage = kept until explicitly cleared).
-  // Debounced: this fires on every keystroke, and serializing the whole store
-  // (history holds full API responses) is expensive to do synchronously.
+  // and relaunching the app (IndexedDB = kept until explicitly cleared).
+  // Debounced: this fires on every keystroke.
   const stateRef = useRef({ preset, sessions })
   // Assigned in an effect, not during render: renders can be discarded or
   // repeated, so they must stay free of side effects.
@@ -351,15 +462,15 @@ export default function App() {
 
   // Set when the store no longer fits, so it isn't a silent failure.
   const [storageFull, setStorageFull] = useState(false)
-  const persist = useCallback(() => {
+  const persist = useCallback(async () => {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify(stateRef.current))
+      await save(stateRef.current)
       setStorageFull(false)
     } catch {
       // Out of quota (history holds full responses). Keep running, but say so.
       setStorageFull(true)
     }
-  }, [])
+  }, [save])
 
   useEffect(() => {
     const t = setTimeout(persist, 400)
@@ -402,28 +513,33 @@ export default function App() {
     if (!replaceEditorText(headersRef.current, headers)) patch({ headers })
   }
 
-  async function send() {
+  // `over` replaces fields of the form for this send (paging sends the next
+  // page's body before the state update has landed).
+  async function send(over = {}) {
+    const req = { ...cur, ...over }
     setLoading(true)
     patch({ error: null })
     let parsedHeaders = {}
     try {
-      parsedHeaders = cur.headers.trim() ? JSON.parse(cur.headers) : {}
+      parsedHeaders = req.headers.trim() ? JSON.parse(req.headers) : {}
     } catch (e) {
       setLoading(false)
       patch({ error: `Headers are not valid JSON: ${e.message}` })
       return
     }
+    const sentUrl = withLogTag(req.url, logTag.trim())
     // Snapshot the request now; the response (or transport error) is attached
     // once it returns. The whole thing becomes an immutable history entry.
     const ts = Date.now()
     const snapshot = {
       id: `${ts}-${Math.random().toString(36).slice(2, 7)}`,
       ts,
-      method: cur.method,
-      url: cur.url,
-      pagesKey: cur.pagesKey,
-      body: cur.body,
-      headers: cur.headers,
+      method: req.method,
+      url: req.url,
+      sentUrl, // url plus apiLogTag, as actually fetched
+      pagesKey: req.pagesKey,
+      body: req.body,
+      headers: req.headers,
       locked: false, // locked entries survive "clear all"
     }
     snapshot.summary = buildSummary(snapshot)
@@ -433,14 +549,12 @@ export default function App() {
     abortRef.current = controller
     const timeout = setTimeout(() => controller.abort('timeout'), REQUEST_TIMEOUT_MS)
     try {
-      const init = { method: cur.method, headers: { ...parsedHeaders }, signal: controller.signal }
-      if (cur.method !== 'GET' && cur.method !== 'HEAD' && cur.body && cur.body.trim() !== '') {
-        init.body = cur.body
-        if (!Object.keys(init.headers).some((h) => h.toLowerCase() === 'content-type')) {
-          init.headers['Content-Type'] = 'application/json'
-        }
+      const init = { method: req.method, headers: { ...parsedHeaders }, signal: controller.signal }
+      if (sendsBody(req.method, req.body)) {
+        init.body = req.body
+        if (!hasContentType(init.headers)) init.headers['Content-Type'] = 'application/json'
       }
-      const r = await fetch(cur.url, init)
+      const r = await fetch(sentUrl, init)
       const text = await r.text()
       let json = null
       try {
@@ -453,7 +567,7 @@ export default function App() {
         status: r.status,
         statusText: r.statusText,
         durationMs: Math.round(performance.now() - started),
-        requestUrl: cur.url,
+        requestUrl: sentUrl,
         headers: Object.fromEntries(r.headers.entries()),
         json,
         text: json == null ? text : undefined,
@@ -481,6 +595,21 @@ export default function App() {
     setLoading(false)
     if (isMobile) setMobilePane('results')
   }
+
+  // Ctrl+Enter (Cmd+Enter on macOS) sends from anywhere, editors included.
+  const sendKeyRef = useRef(null)
+  useEffect(() => {
+    sendKeyRef.current = () => !loading && cur.url && send()
+  })
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key !== 'Enter' || !(e.ctrlKey || e.metaKey) || e.altKey || e.shiftKey) return
+      e.preventDefault()
+      sendKeyRef.current?.()
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [])
 
   // Load a past request back into the form and show its response.
   function viewEntry(id) {
@@ -529,16 +658,101 @@ export default function App() {
     })
   }
 
+  // A short label of your own on an entry (e.g. "before boost change"), shown
+  // in place of the summary. Empty removes it.
+  function editNote(id) {
+    const e = (cur.history || []).find((h) => h.id === id)
+    if (!e) return
+    const input = window.prompt('Note for this request (empty to remove):', e.note || '')
+    if (input === null) return
+    const note = input.trim() || undefined
+    setSessions((s) => {
+      const sess = s[preset]
+      const history = (sess.history || []).map((h) => (h.id === id ? { ...h, note } : h))
+      return { ...s, [preset]: { ...sess, history } }
+    })
+  }
+
+  // Export / import every solution's history as a JSON file. Saved history is
+  // per site address (the hosted app, :5173 and :8787 each have their own), so
+  // this is how it moves between them, or gets backed up.
+  const importRef = useRef(null)
+  const [histMsg, setHistMsg] = useState(null)
+  useEffect(() => {
+    if (!histMsg) return
+    const t = setTimeout(() => setHistMsg(null), 5000)
+    return () => clearTimeout(t)
+  }, [histMsg])
+
+  function exportHistory() {
+    const data = {
+      app: 'hr-api-tester',
+      version: 1,
+      exportedAt: new Date().toISOString(),
+      history: Object.fromEntries(Object.entries(sessions).map(([k, s]) => [k, s.history || []])),
+    }
+    const a = document.createElement('a')
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(data)], { type: 'application/json' }))
+    a.download = `hr-api-tester-history-${data.exportedAt.slice(0, 10)}.json`
+    a.click()
+    setTimeout(() => URL.revokeObjectURL(a.href), 1000)
+  }
+
+  // Merges by entry id: entries already here are skipped, so importing the
+  // same file twice is harmless. Each solution still keeps its newest
+  // MAX_HISTORY.
+  async function importHistory(file) {
+    let data
+    try {
+      data = JSON.parse(await file.text())
+    } catch {
+      setHistMsg({ bad: true, text: `${file.name} is not valid JSON.` })
+      return
+    }
+    if (data?.app !== 'hr-api-tester' || !data.history || typeof data.history !== 'object') {
+      setHistMsg({ bad: true, text: `${file.name} is not an API Tester history export.` })
+      return
+    }
+    const next = { ...sessions }
+    let added = 0
+    for (const [key, entries] of Object.entries(data.history)) {
+      if (!next[key] || !Array.isArray(entries)) continue
+      const have = new Set((next[key].history || []).map((h) => h.id))
+      const fresh = entries.filter((e) => e?.id && e.ts && !have.has(e.id))
+      if (!fresh.length) continue
+      added += fresh.length
+      const history = [...(next[key].history || []), ...fresh]
+        .sort((a, b) => b.ts - a.ts)
+        .slice(0, MAX_HISTORY)
+      next[key] = { ...next[key], history }
+    }
+    setSessions(next)
+    setHistMsg({ text: added ? `Imported ${added} entr${added === 1 ? 'y' : 'ies'}.` : 'Nothing new to import.' })
+  }
+
   const history = cur.history || []
   const viewed = history.find((h) => h.id === cur.viewId) || history[0] || null
+
+  // Search over the history list: note, summary, URL, body and status.
+  const [histQuery, setHistQuery] = useState('')
+  const shownHistory = useMemo(() => {
+    const q = histQuery.trim().toLowerCase()
+    if (!q) return history
+    return history.filter((h) =>
+      [h.note, entrySummary(h), h.url, h.body, h.resp?.status].some(
+        (v) => v != null && String(v).toLowerCase().includes(q),
+      ),
+    )
+  }, [history, histQuery])
 
   // Arrow keys step through history while a row has focus; focus follows.
   function onHistKey(e) {
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
     e.preventDefault()
-    const i = history.findIndex((h) => h.id === viewed?.id)
-    const j = Math.min(history.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)))
-    const next = history[j]
+    const list = shownHistory
+    const i = list.findIndex((h) => h.id === viewed?.id)
+    const j = Math.min(list.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)))
+    const next = list[j]
     if (!next) return
     if (next.id !== viewed?.id) viewEntry(next.id)
     e.currentTarget.querySelector(`[data-id="${next.id}"]`)?.focus()
@@ -558,6 +772,29 @@ export default function App() {
   const allTiles = useMemo(() => boxes.flatMap((b) => b.tiles), [boxes])
   const anySteps = useMemo(() => boxes.some((b) => b.steps.length > 0), [boxes])
   const stepColors = useMemo(() => stepColorMap(boxes), [boxes])
+
+  // Previous / next page: rewrite the request's offset and send it.
+  const canPage = useMemo(
+    () => pageRequest(preset, cur.body, paging, 1) != null,
+    [preset, cur.body, paging],
+  )
+  function goPage(dir) {
+    const body = pageRequest(preset, cur.body, paging, dir)
+    if (body == null || loading) return
+    const url = isLegacy ? (resolveUrl(preset, cur.pagesKey, BASES, body) ?? cur.url) : cur.url
+    patch({ body, url })
+    send({ body, url })
+  }
+
+  // Extra product fields shown on every tile (dot paths allowed).
+  const extraFields = useMemo(
+    () =>
+      (cur.tileFields || '')
+        .split(',')
+        .map((s) => s.trim())
+        .filter(Boolean),
+    [cur.tileFields],
+  )
 
   // Only walked when the Tile mapping panel is actually open.
   const [mappingOpen, setMappingOpen] = useState(false)
@@ -673,10 +910,32 @@ export default function App() {
                 Cancel
               </button>
             ) : (
-              <button className="send" onClick={send} disabled={!cur.url}>
+              <button
+                className="send"
+                onClick={() => send()}
+                disabled={!cur.url}
+                title="Send (Ctrl+Enter)"
+              >
                 Send
               </button>
             )}
+          </div>
+
+          <div className="row logtag">
+            <label
+              className="lbl"
+              htmlFor="logtag"
+              title="Added as ?apiLogTag=… to requests to core.helloretail.com. Find them in the API log with “only tagged” (logging must be on for the website). Doesn't change the response."
+            >
+              API log tag
+            </label>
+            <input
+              id="logtag"
+              className="url"
+              value={logTag}
+              placeholder="optional, e.g. pl-test"
+              onChange={(e) => setLogTag(e.target.value)}
+            />
           </div>
 
           {PRESETS[preset]?.needsKey && (
@@ -766,49 +1025,106 @@ export default function App() {
                 />
               </div>
             ))}
+            <label className="lbl">Extra fields on tiles (comma-separated, dot paths ok)</label>
+            <input
+              className="url"
+              value={cur.tileFields || ''}
+              placeholder="e.g. inStock, brand, extraData.color"
+              onChange={(e) => patch({ tileFields: e.target.value })}
+            />
           </details>
 
-          {history.length > 0 && (
-            <div className="hist">
-              <div className="hist-head">
-                <span className="lbl">History · {history.length}</span>
+          <div className="hist">
+            <div className="hist-head">
+              <span className="lbl">
+                History · {histQuery.trim() ? `${shownHistory.length} / ` : ''}
+                {history.length}
+              </span>
+              <div className="spacer" />
+              <button
+                className="link"
+                onClick={() => importRef.current?.click()}
+                title="Add entries from an exported history file"
+              >
+                import
+              </button>
+              <button
+                className="link"
+                onClick={exportHistory}
+                title="Download every solution's history as JSON (includes request bodies — keys and all)"
+              >
+                export
+              </button>
+              {history.length > 0 && (
                 <button className="link" onClick={clearHistory}>clear all</button>
-              </div>
-              <ul className="hist-list" onKeyDown={onHistKey}>
-                {history.map((h) => (
-                  <li key={h.id} className={viewed?.id === h.id ? 'hist-row active' : 'hist-row'}>
-                    <button
-                      className="hist-main"
-                      data-id={h.id}
-                      onClick={() => viewEntry(h.id)}
-                      title={`${h.method} ${h.url}\n↑/↓ to step through history`}
-                    >
-                      <span
-                        className={h.resp?.ok && !responseError(h.resp) ? 'sdot ok' : 'sdot bad'}
-                      />
-                      <span className="hist-status">{h.resp?.status ?? 'ERR'}</span>
-                      <span className="hist-sum">{entrySummary(h)}</span>
-                      <span className="hist-time">{new Date(h.ts).toLocaleTimeString()}</span>
-                    </button>
-                    <button
-                      className={h.locked ? 'hist-act on' : 'hist-act'}
-                      onClick={() => toggleLock(h.id)}
-                      title={h.locked ? 'Locked — unlock' : 'Lock (keep on “clear all”)'}
-                    >
-                      {h.locked ? '🔒' : '🔓'}
-                    </button>
-                    <button
-                      className="hist-act"
-                      onClick={() => deleteEntry(h.id)}
-                      title="Remove this entry"
-                    >
-                      ×
-                    </button>
-                  </li>
-                ))}
-              </ul>
+              )}
+              <input
+                ref={importRef}
+                type="file"
+                accept="application/json,.json"
+                hidden
+                onChange={(e) => {
+                  const f = e.target.files?.[0]
+                  e.target.value = '' // so the same file can be picked again
+                  if (f) importHistory(f)
+                }}
+              />
             </div>
-          )}
+            {histMsg && <div className={histMsg.bad ? 'hint bad' : 'hint'}>{histMsg.text}</div>}
+            {history.length > 0 && (
+              <input
+                className="url hist-search"
+                placeholder="Search history… (note, query, URL, body, status)"
+                value={histQuery}
+                onChange={(e) => setHistQuery(e.target.value)}
+              />
+            )}
+            {history.length > 0 && shownHistory.length === 0 && (
+              <div className="hint">No history matches “{histQuery}”.</div>
+            )}
+            <ul className="hist-list" onKeyDown={onHistKey}>
+              {shownHistory.map((h) => (
+                <li key={h.id} className={viewed?.id === h.id ? 'hist-row active' : 'hist-row'}>
+                  <button
+                    className="hist-main"
+                    data-id={h.id}
+                    onClick={() => viewEntry(h.id)}
+                    title={`${h.method} ${h.sentUrl || h.url}${h.note ? `\n${entrySummary(h)}` : ''}\n↑/↓ to step through history`}
+                  >
+                    <span
+                      className={h.resp?.ok && !responseError(h.resp) ? 'sdot ok' : 'sdot bad'}
+                    />
+                    <span className="hist-status">{h.resp?.status ?? 'ERR'}</span>
+                    <span className={h.note ? 'hist-sum note' : 'hist-sum'}>
+                      {h.note || entrySummary(h)}
+                    </span>
+                    <span className="hist-time">{new Date(h.ts).toLocaleTimeString()}</span>
+                  </button>
+                  <button
+                    className="hist-act"
+                    onClick={() => editNote(h.id)}
+                    title={h.note ? `Note: ${h.note} — edit` : 'Add a note'}
+                  >
+                    ✎
+                  </button>
+                  <button
+                    className={h.locked ? 'hist-act on' : 'hist-act'}
+                    onClick={() => toggleLock(h.id)}
+                    title={h.locked ? 'Locked — unlock' : 'Lock (keep on “clear all”)'}
+                  >
+                    {h.locked ? '🔒' : '🔓'}
+                  </button>
+                  <button
+                    className="hist-act"
+                    onClick={() => deleteEntry(h.id)}
+                    title="Remove this entry"
+                  >
+                    ×
+                  </button>
+                </li>
+              ))}
+            </ul>
+          </div>
         </section>
 
         {/* ---- Drag handle to resize the config column ---- */}
@@ -836,24 +1152,7 @@ export default function App() {
               </>
             )}
             <div className="spacer" />
-            {resp && (
-              <CopyButton
-                label={tab === 'headers' ? 'copy headers' : 'copy JSON'}
-                title={
-                  tab === 'headers'
-                    ? 'Copy the response headers'
-                    : 'Copy the full JSON response'
-                }
-                text={() =>
-                  tab === 'headers'
-                    ? JSON.stringify(resp.headers ?? {}, null, 2)
-                    : resp.json != null
-                      ? JSON.stringify(resp.json, null, 2)
-                      : (resp.text ?? '')
-                }
-              />
-            )}
-            {['tiles', 'json', 'headers'].map((t) => (
+            {TABS.map((t) => (
               <button
                 key={t}
                 className={tab === t ? 'chip active' : 'chip'}
@@ -885,7 +1184,13 @@ export default function App() {
 
           {tab === 'tiles' && resp && !apiError && (
             <>
-              {paging && <PageInfo {...paging} />}
+              {paging && (
+                <PageInfo
+                  {...paging}
+                  onPage={canPage ? goPage : null}
+                  busy={loading}
+                />
+              )}
               {totalTiles > 0 && (
                 <div className="row filterbar">
                   <input
@@ -944,6 +1249,7 @@ export default function App() {
                       steps={box.steps}
                       grouped={groupBySource}
                       colors={stepColors}
+                      extra={extraFields}
                     />
                   </div>
                 ) : (
@@ -953,18 +1259,40 @@ export default function App() {
                     steps={box.steps}
                     grouped={groupBySource}
                     colors={stepColors}
+                    extra={extraFields}
                   />
                 ),
               )}
             </>
           )}
 
+          {/* The copy button sits on the view it copies. */}
           {tab === 'json' && resp && (
-            <pre className="code view">{JSON.stringify(resp.json ?? resp.text, null, 2)}</pre>
+            <div className="codewrap">
+              <pre className="code view">{JSON.stringify(resp.json ?? resp.text, null, 2)}</pre>
+              <CopyButton
+                className="copyfloat"
+                icon
+                label="copy JSON"
+                title="Copy the full JSON response"
+                text={() =>
+                  resp.json != null ? JSON.stringify(resp.json, null, 2) : (resp.text ?? '')
+                }
+              />
+            </div>
           )}
 
           {tab === 'headers' && resp && (
-            <pre className="code view">{JSON.stringify(resp.headers, null, 2)}</pre>
+            <div className="codewrap">
+              <pre className="code view">{JSON.stringify(resp.headers, null, 2)}</pre>
+              <CopyButton
+                className="copyfloat"
+                icon
+                label="copy headers"
+                title="Copy the response headers"
+                text={() => JSON.stringify(resp.headers ?? {}, null, 2)}
+              />
+            </div>
           )}
           </div>
         </section>
@@ -980,14 +1308,28 @@ const groupDigits = (n) => String(n).replace(/\B(?=(\d{3})+(?!\d))/g, ' ')
 // "Showing 51–60 of 206 results" for a Search / Pages response; `start` is the
 // 0-based offset, so the first product shown is start + 1. Nothing when the
 // response has no products (the "No products found" notice covers that).
-function PageInfo({ start, shown, total }) {
+// `onPage(dir)` sends the previous/next page; null when the request can't be
+// paged (no offset in its body).
+function PageInfo({ start, shown, total, onPage, busy }) {
   if (shown === 0) return null
   const first = start + 1
   const last = start + shown
   return (
     <div className="pageinfo">
-      Showing <b>{groupDigits(first)}{last > first ? `–${groupDigits(last)}` : ''}</b> of{' '}
-      <b>{groupDigits(total)}</b> result{total === 1 ? '' : 's'}
+      <span>
+        Showing <b>{groupDigits(first)}{last > first ? `–${groupDigits(last)}` : ''}</b> of{' '}
+        <b>{groupDigits(total)}</b> result{total === 1 ? '' : 's'}
+      </span>
+      {onPage && (
+        <span className="pager">
+          <button className="chip sm" disabled={busy || start <= 0} onClick={() => onPage(-1)}>
+            ‹ prev
+          </button>
+          <button className="chip sm" disabled={busy || last >= total} onClick={() => onPage(1)}>
+            next ›
+          </button>
+        </span>
+      )}
     </div>
   )
 }
@@ -1011,7 +1353,7 @@ const stepKey = (s) => `${s.index}|${s.source}`
 
 // Render a box's tiles: grouped by countAfterSource step (bordered/colored) when
 // step data exists and grouping is on, otherwise a plain grid.
-function TileGroups({ tiles, steps, grouped, colors }) {
+function TileGroups({ tiles, steps, grouped, colors, extra }) {
   if (grouped && steps.length > 0) {
     return (
       <div className="stepgroups">
@@ -1033,7 +1375,7 @@ function TileGroups({ tiles, steps, grouped, colors }) {
               </div>
               <div className="stepbody">
                 {g.tiles.map((t, i) => (
-                  <Tile key={t.id ?? `${gi}-${i}`} t={t} />
+                  <Tile key={t.id ?? `${gi}-${i}`} t={t} extra={extra} />
                 ))}
               </div>
             </div>
@@ -1045,7 +1387,7 @@ function TileGroups({ tiles, steps, grouped, colors }) {
   return (
     <div className="grid">
       {tiles.map((t, i) => (
-        <Tile key={t.id ?? i} t={t} />
+        <Tile key={t.id ?? i} t={t} extra={extra} />
       ))}
     </div>
   )
@@ -1158,8 +1500,8 @@ function ThemeToggle() {
 }
 
 // `text` is a function so a large response is only serialized on click, not on
-// every render.
-function CopyButton({ text, className = 'chip', label = 'copy', title = 'Copy to clipboard' }) {
+// every render. `icon` adds a clipboard (✓ once copied) before the label.
+function CopyButton({ text, className = 'chip', label = 'copy', title = 'Copy to clipboard', icon }) {
   const [state, setState] = useState('idle') // idle | ok | err
   const timer = useRef(null)
   useEffect(() => () => clearTimeout(timer.current), [])
@@ -1174,7 +1516,19 @@ function CopyButton({ text, className = 'chip', label = 'copy', title = 'Copy to
     timer.current = setTimeout(() => setState('idle'), 1400)
   }
   return (
-    <button className={className} onClick={copy} title={title}>
+    <button className={className} onClick={copy} title={title} data-state={state}>
+      {icon && (
+        <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+          {state === 'ok' ? (
+            <path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" />
+          ) : (
+            <g fill="none" stroke="currentColor" strokeWidth="1.4">
+              <rect x="5.5" y="5.5" width="8" height="8" rx="1.5" />
+              <path d="M10.5 5.5V3.5A1.5 1.5 0 0 0 9 2H3.5A1.5 1.5 0 0 0 2 3.5V9a1.5 1.5 0 0 0 1.5 1.5h2" />
+            </g>
+          )}
+        </svg>
+      )}
       {state === 'ok' ? 'copied' : state === 'err' ? 'failed' : label}
     </button>
   )
@@ -1183,7 +1537,7 @@ function CopyButton({ text, className = 'chip', label = 'copy', title = 'Copy to
 // Memoized: any App state change (typing, filtering, resizing) re-renders the
 // whole tree, and a response can hold hundreds of tiles. Tile props are stable
 // object refs, so this skips nearly all of that reconciliation.
-const Tile = memo(function Tile({ t }) {
+const Tile = memo(function Tile({ t, extra }) {
   const [open, setOpen] = useState(false)
   // `fields` often omits title (and banners have none), so fall back to the
   // banner's alt text, then the product number, before giving up.
@@ -1225,6 +1579,19 @@ const Tile = memo(function Tile({ t }) {
           <div className="prices">
             {t.price != null && <span className="price">{String(t.price)}</span>}
             {t.oldPrice != null && <span className="old">{String(t.oldPrice)}</span>}
+          </div>
+        )}
+        {!t.isBanner && extra?.length > 0 && (
+          <div className="xfields">
+            {extra.map((f) => {
+              const v = fieldText(getPath(t.raw, f))
+              return (
+                <div className="xf" key={f} title={`${f}: ${v}`}>
+                  <span className="xk">{f}</span>
+                  <span className="xv">{v}</span>
+                </div>
+              )
+            })}
           </div>
         )}
         <div className="row">
