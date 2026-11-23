@@ -14,6 +14,7 @@
   --bad: #d1242f;
   --banner: #d29922;
   --sponsored: #bf5af2;
+  --suggested: #3fb6c0;
   --on-tag: #0b1020;
   --code-bg: #0b0d12;
   --code-text: #cdd6e4;
@@ -49,6 +50,7 @@
   --bad: #cf222e;
   --banner: #9a6700;
   --sponsored: #8250df;
+  --suggested: #0a7c86;
   --on-tag: #fff;
   --code-bg: #f8f9fb;
   --code-text: #1f2328;
@@ -99,8 +101,11 @@ body {
 .gutter {
   flex: 0 0 6px; align-self: stretch; cursor: col-resize;
   background: var(--border); transition: background .12s;
+  /* Let pointer drags resize instead of scrolling the page on touch. */
+  touch-action: none;
 }
-.gutter:hover, .gutter:active { background: var(--accent); }
+.gutter:hover, .gutter:active, .gutter:focus-visible { background: var(--accent); }
+.gutter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .tabs { flex-wrap: wrap; }
@@ -205,9 +210,10 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .sdot.bad { background: var(--bad); }
 
 .statusbar { position: sticky; top: 0; }
-.badge { border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; }
+.badge { border-radius: 6px; padding: 3px 8px; font-size: 12px; font-weight: 600; white-space: nowrap; }
 .badge.ok { background: var(--ok-bg); color: var(--ok-text); }
 .badge.bad { background: var(--bad-bg); color: var(--bad-text); }
+.badge.ai { background: var(--suggested); color: var(--on-tag); cursor: help; }
 .hint { color: var(--muted); font-size: 12px; }
 .hint.bad { color: var(--bad-soft); }
 
@@ -324,25 +330,27 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 /* Cancel replaces Send while a request is in flight. */
 .send.cancel { background: var(--bad); color: #fff; }
 
+/* Corner tags on a tile, stacked top-right: retail media (banner / sponsored)
+   and Search's AI synonym matches. They keep pointer events so their title
+   tooltips show. */
+.tags {
+  position: absolute; top: 4px; right: 4px; z-index: 1;
+  display: flex; flex-direction: column; align-items: flex-end; gap: 3px;
+}
+.btag, .stag, .atag {
+  color: var(--on-tag); border-radius: 5px; padding: 1px 5px;
+  font-size: 10px; font-weight: 700; letter-spacing: .02em;
+  text-transform: uppercase; cursor: help;
+}
 /* Retail media banners sit in the same result array as products. */
 .tile.banner { border-color: var(--banner); }
-.btag {
-  position: absolute; top: 4px; right: 4px; z-index: 1;
-  background: var(--banner); color: var(--on-tag);
-  border-radius: 5px; padding: 1px 5px;
-  font-size: 10px; font-weight: 700; letter-spacing: .02em;
-  text-transform: uppercase; pointer-events: none;
-}
+.btag { background: var(--banner); }
 .bmeta { font-size: 11px; color: var(--muted); word-break: break-word; font-variant-numeric: tabular-nums; }
 /* Sponsored products: a normal product boosted by a retail media campaign. */
 .tile.sponsored { border-color: var(--sponsored); }
-.stag {
-  position: absolute; top: 4px; right: 4px; z-index: 1;
-  background: var(--sponsored); color: var(--on-tag);
-  border-radius: 5px; padding: 1px 5px;
-  font-size: 10px; font-weight: 700; letter-spacing: .02em;
-  text-transform: uppercase; pointer-events: none;
-}
+.stag { background: var(--sponsored); }
+/* AI match: Search found it only through synonym expansion (suggestedResult). */
+.atag { background: var(--suggested); }
 
 /* ---- Interaction states ----
    Every clickable thing reacts to hover and shows a focus ring for keyboard
