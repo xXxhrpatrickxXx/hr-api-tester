@@ -101,8 +101,11 @@ body {
 .gutter {
   flex: 0 0 6px; align-self: stretch; cursor: col-resize;
   background: var(--border); transition: background .12s;
+  /* Let pointer drags resize instead of scrolling the page on touch. */
+  touch-action: none;
 }
-.gutter:hover, .gutter:active { background: var(--accent); }
+.gutter:hover, .gutter:active, .gutter:focus-visible { background: var(--accent); }
+.gutter:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
 
 .row { display: flex; gap: 8px; align-items: center; margin-bottom: 10px; }
 .tabs { flex-wrap: wrap; }

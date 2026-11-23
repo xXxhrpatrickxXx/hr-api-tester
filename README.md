@@ -8,7 +8,8 @@ Tool to fire requests at the Hello Retail **Recommendations**, **Search**, and *
 
 - **client/** — Vite + React UI. Pick an API preset (or Custom), choose a method, edit the JSON body, hit **Send**. Results show as product tiles plus raw JSON / response headers.
   - `src/App.jsx` holds the app state and layout; `src/components/` the UI pieces (tiles, history panel, page info, theme / Matrix toggles, …).
-  - `src/lib/` is the plain logic, with no React: presets and endpoint URLs, reading products out of each API's response shape, legacy query strings, paging and log-tag rewriting, history search / export / import, and the IndexedDB store. Its `*.test.js` files are the tests.
+  - `src/lib/` is the plain logic, with no React: presets and endpoint URLs, reading products out of each API's response shape, legacy query strings, paging and log-tag rewriting, history search / export / import, guarded localStorage access, and the IndexedDB store. Its `*.test.js` files are the tests.
+  - `src/hooks/` holds React hooks (`useStoredState`: state kept in localStorage).
 - The browser calls `core.helloretail.com` **directly** (the HR serve endpoints allow cross-origin requests), so the app is fully static and needs no server. Base URLs are baked into the client; the API key and `websiteUuid` are entered per request.
 - **server/** — an optional Express server (`:8787`) that just serves the built client, for running it locally. It holds no credentials and no proxy; the deployed site doesn't use it at all.
 
@@ -33,12 +34,16 @@ npm test
 
 ## Credentials
 
-The API key and `websiteUuid` vary per request, so they are **not** stored anywhere — enter them directly in the request (headers / JSON body) in the UI. Nothing sensitive is built into the deployed site, and there is no `.env` to configure: the endpoint URLs are constants in the client.
+The API key and `websiteUuid` vary per request, so they are **not** built into the app — enter them directly in the request (headers / JSON body) in the UI. Nothing sensitive is in the deployed site, and there is no `.env` to configure: the endpoint URLs are constants in the client.
+
+They **are** kept in your browser, though: every sent request goes into the history with its full headers and body, saved in IndexedDB for that site address until you delete it (the history's *×* / *clear all*, or clearing site data). Use a private window if that's not wanted.
+
+**Export history** redacts the values of credential-looking request headers (`Authorization`, anything with `key`, `token`, `secret`, `auth`, `cookie`, `session` or `passw` in its name) so an export can be shared. Request bodies are exported as they are, so a key put in the body (e.g. legacy Search's `key`) stays in the file.
 
 ## Features
 
 - **Per-solution sessions & history** — each API keeps its own request form, page key, and a history of up to 100 past requests/responses (persisted in IndexedDB). Lock entries to protect them from "clear all", add a note to label them, search the list, and step through it with ↑/↓.
-- **Export / import history** — saved history belongs to the site address (the hosted app, `:5173` and `:8787` each have their own), so export it as JSON to back it up or move it between them. Importing merges, skipping entries already there.
+- **Export / import history** — saved history belongs to the site address (the hosted app, `:5173` and `:8787` each have their own), so export it as JSON to back it up or move it between them. Credential headers are redacted in the file (see [Credentials](#credentials)). Importing merges, skipping entries already there.
 - **Paging** — Search, Pages and Search (legacy) results get prev / next buttons that move the request's offset (`products.start` / `product_start`) and resend it.
 - **API log tag** — an optional tag added as `?apiLogTag=…` to every request to `core.helloretail.com`, so your test calls are easy to find in the API log ("only tagged"). API logging has to be on for the website.
 - **AI synonym matches** — Search products that only matched through AI synonym expansion (`suggestedResult`) get an *AI match* tag; the status bar counts them, and says so when every result is one (`suggestedProductStatus: ONLY_SUGGESTED`).

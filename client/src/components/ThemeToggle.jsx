@@ -1,4 +1,5 @@
-import { useEffect, useState } from 'react'
+import { useEffect } from 'react'
+import { useStoredState } from '../hooks/useStoredState.js'
 
 // Theme choice: 'auto' follows the OS (dark when it states no preference),
 // 'light' / 'dark' pin it. index.html applies it before first paint; this keeps
@@ -8,19 +9,12 @@ const THEME_NEXT = { auto: 'light', light: 'dark', dark: 'auto' }
 const THEME_LABEL = { auto: '◐ Auto', light: '☀ Light', dark: '☾ Dark' }
 
 export function ThemeToggle() {
-  const [mode, setMode] = useState(() => {
-    try {
-      const t = localStorage.getItem(THEME_KEY)
-      return t === 'light' || t === 'dark' ? t : 'auto'
-    } catch {
-      return 'auto'
-    }
-  })
+  const [mode, setMode] = useStoredState(
+    THEME_KEY,
+    (t) => (t === 'light' || t === 'dark' ? t : 'auto'),
+    (m) => (m === 'auto' ? null : m),
+  )
   useEffect(() => {
-    try {
-      if (mode === 'auto') localStorage.removeItem(THEME_KEY)
-      else localStorage.setItem(THEME_KEY, mode)
-    } catch {}
     const mq = window.matchMedia('(prefers-color-scheme: light)')
     const apply = () => {
       const theme = mode === 'auto' ? (mq.matches ? 'light' : 'dark') : mode

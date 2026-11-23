@@ -7,6 +7,8 @@ import { paramsFromUrl, parseParams } from './lib/legacy.js'
 import { BASES, MAX_HISTORY, PRESETS, resolveUrl } from './lib/presets.js'
 import { DEFAULT_FIELD_MAP, extractResult, findArrayPaths, pageInfo } from './lib/products.js'
 import { hasContentType, pageRequest, responseError, sendsBody, withLogTag } from './lib/request.js'
+import { storedNumber, writeStored } from './lib/storage.js'
+import { useStoredState } from './hooks/useStoredState.js'
 import { CopyButton } from './components/CopyButton.jsx'
 import { ErrorCard } from './components/ErrorCard.jsx'
 import { FormatButton } from './components/FormatButton.jsx'
@@ -19,6 +21,8 @@ import { TileGroups } from './components/Tiles.jsx'
 const REQUEST_TIMEOUT_MS = 30000
 const LOG_TAG_KEY = 'hr-api-tester:logTag'
 const MATRIX_KEY = 'hr-api-tester:matrix'
+const LEFT_WIDTH_KEY = 'hr-api-tester:leftWidth'
+const BODY_HEIGHT_KEY = 'hr-api-tester:bodyHeight'
 const TABS = ['tiles', 'json', 'headers'] // results views
 
 // Config-column sizing. PANEL_PAD is .panel's horizontal padding (14px each
@@ -46,7 +50,6 @@ function Tester({ initial, save }) {
   const [sessions, setSessions] = useState(initial.sessions)
   const cur = sessions[preset]
 
-  const [loading, setLoading] = useState(false)
   // Each solution remembers its own results view, so sending or stepping
   // through history stays on JSON (say) instead of jumping back to tiles.
   const tab = TABS.includes(cur.tab) ? cur.tab : 'tiles'
@@ -65,57 +68,45 @@ function Tester({ initial, save }) {
 
   // Width of the config column, draggable via the gutter. Persisted across
   // sessions (a layout preference, not per-request data).
-  const [leftWidth, setLeftWidth] = useState(() => {
-    const w = Number(localStorage.getItem('hr-api-tester:leftWidth'))
-    return w >= MIN_LEFT && w <= 1400 ? w : 420
-  })
-  useEffect(() => {
-    localStorage.setItem('hr-api-tester:leftWidth', String(leftWidth))
-  }, [leftWidth])
+  const [leftWidth, setLeftWidth] = useStoredState(LEFT_WIDTH_KEY, (raw) =>
+    storedNumber(raw, MIN_LEFT, 1400, 420),
+  )
 
   // Height of the JSON body editor, set by dragging its resize handle and
   // persisted. Its *width* is not stored: the editor always fills the config
   // column, so it follows the column as that is resized.
-  const [bodyHeight, setBodyHeight] = useState(() => {
-    const h = Number(localStorage.getItem('hr-api-tester:bodyHeight'))
-    return h >= 90 && h <= 4000 ? h : 260
-  })
-  useEffect(() => {
-    localStorage.setItem('hr-api-tester:bodyHeight', String(bodyHeight))
-    // Width used to be pinned separately; drop any value left from then.
-    localStorage.removeItem('hr-api-tester:bodyWidth')
-  }, [bodyHeight])
+  const [bodyHeight, setBodyHeight] = useStoredState(BODY_HEIGHT_KEY, (raw) =>
+    storedNumber(raw, 90, 4000, 260),
+  )
+  // Width used to be pinned separately; drop any value left from then.
+  useEffect(() => writeStored('hr-api-tester:bodyWidth', null), [])
 
-  // In-flight request, so it can be cancelled (or timed out).
-  const abortRef = useRef(null)
+  // In-flight requests per solution, so each can be cancelled (or timed out)
+  // and a request running in one solution doesn't lock the others.
+  const abortRef = useRef({})
+  const [inFlight, setInFlight] = useState({})
+  const loading = !!inFlight[preset]
+  const setLoadingFor = (key, on) => setInFlight((m) => ({ ...m, [key]: on }))
 
   // Matrix mode: green-on-black look with digital rain behind the panels.
   // index.html applies the saved choice before first paint.
-  const [matrix, setMatrix] = useState(() => document.documentElement.dataset.matrix === 'on')
+  const [matrix, setMatrix] = useStoredState(
+    MATRIX_KEY,
+    (raw) => raw === 'on',
+    (on) => (on ? 'on' : null),
+  )
   useEffect(() => {
     if (matrix) document.documentElement.dataset.matrix = 'on'
     else delete document.documentElement.dataset.matrix
-    try {
-      if (matrix) localStorage.setItem(MATRIX_KEY, 'on')
-      else localStorage.removeItem(MATRIX_KEY)
-    } catch {}
   }, [matrix])
 
   // API log tag, added to every request to Hello Retail. Shared by all
   // solutions and kept across sessions, like the layout preferences.
-  const [logTag, setLogTag] = useState(() => {
-    try {
-      return localStorage.getItem(LOG_TAG_KEY) || ''
-    } catch {
-      return ''
-    }
-  })
-  useEffect(() => {
-    try {
-      if (logTag) localStorage.setItem(LOG_TAG_KEY, logTag)
-      else localStorage.removeItem(LOG_TAG_KEY)
-    } catch {}
-  }, [logTag])
+  const [logTag, setLogTag] = useStoredState(
+    LOG_TAG_KEY,
+    (raw) => raw || '',
+    (tag) => tag || null,
+  )
 
   // Dragging the editor's corner sideways widens the config column instead of
   // the editor itself: the column grows to fit, then the editor snaps back to
@@ -139,23 +130,42 @@ function Tester({ initial, save }) {
     return () => ro.disconnect()
   }, [isMobile])
 
+  const clampLeft = (w) => Math.min(Math.max(w, MIN_LEFT), maxLeft())
+
+  // Pointer events, so dragging works with mouse, touch and pen alike.
   function startResize(e) {
+    if (e.button !== 0) return
     e.preventDefault()
     const startX = e.clientX
     const startW = leftWidth
-    const onMove = (ev) => {
-      setLeftWidth(Math.min(Math.max(startW + ev.clientX - startX, MIN_LEFT), maxLeft()))
-    }
+    const onMove = (ev) => setLeftWidth(clampLeft(startW + ev.clientX - startX))
     const onUp = () => {
-      window.removeEventListener('mousemove', onMove)
-      window.removeEventListener('mouseup', onUp)
+      window.removeEventListener('pointermove', onMove)
+      window.removeEventListener('pointerup', onUp)
+      window.removeEventListener('pointercancel', onUp)
       document.body.style.cursor = ''
       document.body.style.userSelect = ''
     }
-    window.addEventListener('mousemove', onMove)
-    window.addEventListener('mouseup', onUp)
+    window.addEventListener('pointermove', onMove)
+    window.addEventListener('pointerup', onUp)
+    window.addEventListener('pointercancel', onUp)
     document.body.style.cursor = 'col-resize'
     document.body.style.userSelect = 'none'
+  }
+
+  // Keyboard: ←/→ move the gutter (Shift for bigger steps), Home/End jump to
+  // the narrowest / widest column.
+  function resizeKey(e) {
+    const step = e.shiftKey ? 80 : 20
+    const next = {
+      ArrowLeft: leftWidth - step,
+      ArrowRight: leftWidth + step,
+      Home: MIN_LEFT,
+      End: maxLeft(),
+    }[e.key]
+    if (next == null) return
+    e.preventDefault()
+    setLeftWidth(clampLeft(next))
   }
 
   // Patch the active preset's session.
@@ -270,16 +280,18 @@ function Tester({ initial, save }) {
   // page's body before the state update has landed).
   async function send(over = {}) {
     const req = { ...cur, ...over }
-    setLoading(true)
+    // The solution this request belongs to, even if another is selected
+    // before it returns.
+    const key = preset
     patch({ error: null })
     let parsedHeaders = {}
     try {
       parsedHeaders = req.headers.trim() ? JSON.parse(req.headers) : {}
     } catch (e) {
-      setLoading(false)
       patch({ error: `Headers are not valid JSON: ${e.message}` })
       return
     }
+    setLoadingFor(key, true)
     const sentUrl = withLogTag(req.url, logTag.trim())
     // Snapshot the request now; the response (or transport error) is attached
     // once it returns. The whole thing becomes an immutable history entry.
@@ -299,7 +311,7 @@ function Tester({ initial, save }) {
     let entry
     const started = performance.now()
     const controller = new AbortController()
-    abortRef.current = controller
+    abortRef.current[key] = controller
     const timeout = setTimeout(() => controller.abort('timeout'), REQUEST_TIMEOUT_MS)
     try {
       const init = { method: req.method, headers: { ...parsedHeaders }, signal: controller.signal }
@@ -337,16 +349,17 @@ function Tester({ initial, save }) {
       entry = { ...snapshot, resp: null, error: reason }
     } finally {
       clearTimeout(timeout)
-      abortRef.current = null
+      delete abortRef.current[key]
     }
     // Prepend to this solution's history and view the new entry.
     setSessions((s) => {
-      const sess = s[preset]
+      const sess = s[key]
       const history = [entry, ...(sess.history || [])].slice(0, MAX_HISTORY)
-      return { ...s, [preset]: { ...sess, history, viewId: entry.id, error: null } }
+      return { ...s, [key]: { ...sess, history, viewId: entry.id, error: null } }
     })
-    setLoading(false)
-    if (isMobile) setMobilePane('results')
+    setLoadingFor(key, false)
+    // Only jump to results if this solution is still the one on screen.
+    if (isMobile && stateRef.current.preset === key) setMobilePane('results')
   }
 
   // Ctrl+Enter (Cmd+Enter on macOS) sends from anywhere, editors included.
@@ -606,7 +619,7 @@ function Tester({ initial, save }) {
               onChange={(e) => setUrl(e.target.value)}
             />
             {loading ? (
-              <button className="send cancel" onClick={() => abortRef.current?.abort()}>
+              <button className="send cancel" onClick={() => abortRef.current[preset]?.abort()}>
                 Cancel
               </button>
             ) : (
@@ -748,7 +761,19 @@ function Tester({ initial, save }) {
         </section>
 
         {/* ---- Drag handle to resize the config column ---- */}
-        <div className="gutter" onMouseDown={startResize} title="Drag to resize" />
+        <div
+          className="gutter"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="Resize request panel"
+          aria-valuenow={Math.round(leftWidth)}
+          aria-valuemin={MIN_LEFT}
+          aria-valuemax={Math.round(maxLeft())}
+          tabIndex={isMobile ? -1 : 0}
+          onPointerDown={startResize}
+          onKeyDown={resizeKey}
+          title="Drag (or focus and use ←/→) to resize"
+        />
 
         {/* ---- Results panel ---- */}
         <section className="panel results" hidden={isMobile && mobilePane !== 'results'}>
