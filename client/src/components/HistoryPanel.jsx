@@ -70,7 +70,7 @@ export function HistoryPanel({
         <button
           className="link"
           onClick={onExport}
-          title="Download every solution's history as JSON (includes request bodies — keys and all)"
+          title="Download every solution's history as JSON. Credential headers (Authorization, *key*, *token* …) are redacted; request bodies are kept as-is."
         >
           export
         </button>

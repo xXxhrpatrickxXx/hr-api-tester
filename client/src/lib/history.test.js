@@ -1,5 +1,13 @@
 import { describe, expect, it } from 'vitest'
-import { buildExport, buildSummary, entrySummary, matchesHistory, mergeImport } from './history.js'
+import {
+  REDACTED,
+  buildExport,
+  buildSummary,
+  entrySummary,
+  matchesHistory,
+  mergeImport,
+  redactHeaders,
+} from './history.js'
 
 describe('buildSummary', () => {
   it('labels an entry from its request', () => {
@@ -40,6 +48,37 @@ describe('export / import', () => {
     const data = buildExport(sessions, new Date('2026-11-10T08:00:00Z'))
     expect(data).toMatchObject({ app: 'hr-api-tester', version: 1, exportedAt: '2026-11-10T08:00:00.000Z' })
     expect(data.history.search.map((h) => h.id)).toEqual(['a', 'b'])
+  })
+
+  it('redacts credential headers on export, keeping the rest', () => {
+    const headers = JSON.stringify(
+      {
+        'Content-Type': 'application/json',
+        Authorization: 'Bearer abc123',
+        'x-api-key': 'k-1',
+        'X-Auth-Token': 'with \\"quote\\"',
+        'x-hr-key': 42,
+      },
+      null,
+      2,
+    )
+    const data = buildExport({ search: { history: [{ ...e('a', 1), headers, body: '{"key":"stays"}' }] } })
+    const out = data.history.search[0]
+    const parsed = JSON.parse(out.headers)
+    expect(parsed['Content-Type']).toBe('application/json')
+    expect(parsed.Authorization).toBe(REDACTED)
+    expect(parsed['x-api-key']).toBe(REDACTED)
+    expect(parsed['X-Auth-Token']).toBe(REDACTED)
+    expect(parsed['x-hr-key']).toBe(REDACTED)
+    expect(out.body).toBe('{"key":"stays"}')
+    // The entry in the app itself is untouched.
+    expect(headers).toContain('abc123')
+  })
+
+  it('redacts even when the headers JSON is broken', () => {
+    const out = redactHeaders('{\n  "Authorization": "Bearer abc",\n  "Accept": "x"')
+    expect(out).not.toContain('abc')
+    expect(out).toContain('"Accept": "x"')
   })
 
   it('merges new entries newest first and skips ones already there', () => {

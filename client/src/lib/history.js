@@ -35,13 +35,35 @@ export function matchesHistory(entry, q) {
 // Export / import of every solution's history as one JSON file. Saved history
 // is per site address (the hosted app, :5173 and :8787 each have their own),
 // so this is how it moves between them, or gets backed up.
+// Credential-looking request headers (Authorization, X-Api-Key, tokens,
+// cookies …) have their values replaced, so an export can be shared without
+// leaking keys. Request bodies are kept as they are.
 export function buildExport(sessions, now = new Date()) {
   return {
     app: 'hr-api-tester',
     version: 1,
     exportedAt: now.toISOString(),
-    history: Object.fromEntries(Object.entries(sessions).map(([k, s]) => [k, s.history || []])),
+    history: Object.fromEntries(
+      Object.entries(sessions).map(([k, s]) => [k, (s.history || []).map(redactEntry)]),
+    ),
   }
+}
+
+export const REDACTED = '<redacted>'
+const SENSITIVE_HEADER = /auth|token|secret|passw|cookie|session|key/i
+
+const redactEntry = (entry) =>
+  typeof entry?.headers === 'string' && entry.headers
+    ? { ...entry, headers: redactHeaders(entry.headers) }
+    : entry
+
+// Works on the headers *text* (as typed in the editor), so it keeps the
+// formatting and still catches values when the JSON doesn't fully parse.
+export function redactHeaders(text) {
+  return text.replace(
+    /("((?:[^"\\]|\\.)*)"\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s][^,}\n]*)/g,
+    (m, lead, name, value) => (SENSITIVE_HEADER.test(name) ? `${lead}"${REDACTED}"` : m),
+  )
 }
 
 // Merge an export into `sessions` by entry id: entries already there are
