@@ -161,6 +161,8 @@ export function toTile(item, fieldMap = DEFAULT_FIELD_MAP, pos) {
     banner, // { url, width, height, altText, placement } of the chosen artwork
     // Non-banner items with a campaign id are sponsored products.
     campaignId: campaignOf(item),
+    // Search: matched only through AI synonym expansion, not the query itself.
+    suggested: item.suggestedResult === true,
     raw: item,
     pos,
     search: haystack(item).join('\u0000'),
