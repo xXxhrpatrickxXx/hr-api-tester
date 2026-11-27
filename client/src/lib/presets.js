@@ -113,3 +113,18 @@ export function loadState(saved) {
   }
   return { preset: saved.preset || 'recommendations', sessions }
 }
+
+// Sessions with their URL field showing the real resolved endpoint. Pages
+// always follows its page key; other presets are filled in only while empty
+// (legacy ones then follow their parameters as they are edited). Custom is
+// left alone.
+export function withResolvedUrls(sessions) {
+  const out = { ...sessions }
+  for (const [key, s] of Object.entries(sessions)) {
+    const p = PRESETS[key]
+    if (!p?.baseKey) continue
+    if (p.needsKey) out[key] = { ...s, url: resolveUrl(key, s.pagesKey, BASES) }
+    else if (!s.url) out[key] = { ...s, url: resolveUrl(key, s.pagesKey, BASES, s.body) ?? '' }
+  }
+  return out
+}

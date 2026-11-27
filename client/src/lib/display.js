@@ -1,3 +1,6 @@
+// Results views, in tab order.
+export const RESULT_TABS = ['tiles', 'json', 'headers']
+
 // Extra tile field values: objects as compact JSON, missing as a dash.
 export function fieldText(v) {
   if (v == null || v === '') return '—'

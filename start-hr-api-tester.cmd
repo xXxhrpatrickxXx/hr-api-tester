@@ -1,6 +1,6 @@
 @echo off
 rem One-click launcher for the Hello Retail API Tester.
-rem Starts the local server (serving the built UI) and opens it in the browser.
+rem Serves the built UI locally (vite preview) and opens it in the browser.
 rem Close the "hr-api-tester server" window to stop it.
 
 cd /d "%~dp0"
@@ -12,7 +12,7 @@ if not exist "dist\index.html" (
 )
 
 rem Start the server in its own window so closing it stops the tool.
-start "hr-api-tester server" cmd /k "node server/index.js"
+start "hr-api-tester server" cmd /k "npm run preview"
 
 rem Give the server a moment to come up, then open the browser.
 timeout /t 2 /nobreak >nul

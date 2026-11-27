@@ -12,6 +12,10 @@ export default defineConfig({
   server: {
     port: 5173,
   },
+  // `npm run serve` / `npm run preview`: the built app, served locally.
+  preview: {
+    port: 8787,
+  },
   build: {
     outDir: '../dist',
     emptyOutDir: true,
