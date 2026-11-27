@@ -62,7 +62,7 @@ const redactEntry = (entry) =>
 export function redactHeaders(text) {
   return text.replace(
     /("((?:[^"\\]|\\.)*)"\s*:\s*)("(?:[^"\\]|\\.)*"|[^,}\s][^,}\n]*)/g,
-    (m, lead, name, value) => (SENSITIVE_HEADER.test(name) ? `${lead}"${REDACTED}"` : m),
+    (m, lead, name) => (SENSITIVE_HEADER.test(name) ? `${lead}"${REDACTED}"` : m),
   )
 }
 

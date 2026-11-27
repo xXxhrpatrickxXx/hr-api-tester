@@ -18,6 +18,13 @@ let bootPromise = null
 
 export function boot() {
   bootPromise ??= (async () => {
+    // The body editor's width used to be stored; it now always fills the
+    // column, so drop any value left from then.
+    try {
+      localStorage.removeItem('hr-api-tester:bodyWidth')
+    } catch {
+      /* storage unavailable */
+    }
     let initial
     let save
     try {

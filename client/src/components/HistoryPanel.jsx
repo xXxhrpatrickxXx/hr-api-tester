@@ -33,16 +33,15 @@ export function HistoryPanel({
   }, [msg])
 
   // A short label of your own on an entry (e.g. "before boost change"), shown
-  // in place of the summary. Empty removes it.
-  function editNote(h) {
-    const input = window.prompt('Note for this request (empty to remove):', h.note || '')
-    if (input !== null) onNote(h.id, input.trim() || undefined)
-  }
+  // in place of the summary. Edited in place: the row turns into an input.
+  const [editingId, setEditingId] = useState(null)
+  const saveNoteRef = useRef(null) // saves the note being edited
 
   // Arrow keys step through the (filtered) list while a row has focus; focus
-  // follows.
+  // follows. Not while typing a note.
   function onKeyDown(e) {
     if (e.key !== 'ArrowUp' && e.key !== 'ArrowDown') return
+    if (e.target.tagName === 'INPUT') return
     e.preventDefault()
     const i = shown.findIndex((h) => h.id === viewedId)
     const j = Math.min(shown.length - 1, Math.max(0, i + (e.key === 'ArrowDown' ? 1 : -1)))
@@ -104,6 +103,17 @@ export function HistoryPanel({
       <ul className="hist-list" onKeyDown={onKeyDown}>
         {shown.map((h) => (
           <li key={h.id} className={viewedId === h.id ? 'hist-row active' : 'hist-row'}>
+            {editingId === h.id ? (
+              <NoteInput
+                initial={h.note || ''}
+                placeholder={entrySummary(h)}
+                saveRef={saveNoteRef}
+                onDone={(note) => {
+                  setEditingId(null)
+                  if (note !== undefined) onNote(h.id, note.trim() || undefined)
+                }}
+              />
+            ) : (
             <button
               className="hist-main"
               data-id={h.id}
@@ -117,10 +127,13 @@ export function HistoryPanel({
               </span>
               <span className="hist-time">{new Date(h.ts).toLocaleTimeString()}</span>
             </button>
+            )}
             <button
               className="hist-act"
-              onClick={() => editNote(h)}
-              title={h.note ? `Note: ${h.note} — edit` : 'Add a note'}
+              onClick={() => (editingId === h.id ? saveNoteRef.current?.() : setEditingId(h.id))}
+              // While editing, this saves: keep the input from blurring first.
+              onMouseDown={(e) => editingId === h.id && e.preventDefault()}
+              title={editingId === h.id ? 'Save the note' : h.note ? `Note: ${h.note} — edit` : 'Add a note'}
             >
               ✎
             </button>
@@ -138,5 +151,40 @@ export function HistoryPanel({
         ))}
       </ul>
     </div>
+  )
+}
+
+// Note editor shown in place of a history row. Enter or leaving the field
+// saves; Escape cancels. `onDone(note)` gets the text, or undefined on cancel.
+function NoteInput({ initial, placeholder, saveRef, onDone }) {
+  const [value, setValue] = useState(initial)
+  // Enter, then the blur as the input goes away, must not save twice.
+  const done = useRef(false)
+  const finish = (note) => {
+    if (done.current) return
+    done.current = true
+    onDone(note)
+  }
+  useEffect(() => {
+    saveRef.current = () => finish(value)
+    return () => {
+      saveRef.current = null
+    }
+  })
+  return (
+    <input
+      className="url hist-note"
+      autoFocus
+      value={value}
+      placeholder={placeholder}
+      aria-label="Note for this request (empty to remove)"
+      onChange={(e) => setValue(e.target.value)}
+      onFocus={(e) => e.target.select()}
+      onBlur={() => finish(value)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') finish(value)
+        else if (e.key === 'Escape') finish(undefined)
+      }}
+    />
   )
 }

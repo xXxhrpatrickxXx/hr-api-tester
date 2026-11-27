@@ -1,37 +1,30 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { boot } from './lib/boot.js'
-import { stepColorMap, valueMatches } from './lib/display.js'
+import { RESULT_TABS } from './lib/display.js'
 import { isFormatShortcut, replaceEditorText } from './lib/dom.js'
-import { buildExport, buildSummary, mergeImport } from './lib/history.js'
+import { buildExport, mergeImport } from './lib/history.js'
 import { paramsFromUrl, parseParams } from './lib/legacy.js'
-import { BASES, MAX_HISTORY, PRESETS, resolveUrl } from './lib/presets.js'
-import { DEFAULT_FIELD_MAP, extractResult, findArrayPaths, pageInfo } from './lib/products.js'
-import { hasContentType, pageRequest, responseError, sendsBody, withLogTag } from './lib/request.js'
-import { storedNumber, writeStored } from './lib/storage.js'
+import { BASES, MAX_HISTORY, PRESETS, resolveUrl, withResolvedUrls } from './lib/presets.js'
+import { pageRequest } from './lib/request.js'
+import { parseHeaders, snapshotRequest } from './lib/send.js'
+import { storedNumber } from './lib/storage.js'
+import { useColumnResize } from './hooks/useColumnResize.js'
+import { useMediaQuery } from './hooks/useMediaQuery.js'
+import { useRequests } from './hooks/useRequests.js'
+import { useResult } from './hooks/useResult.js'
 import { useStoredState } from './hooks/useStoredState.js'
-import { CopyButton } from './components/CopyButton.jsx'
-import { ErrorCard } from './components/ErrorCard.jsx'
 import { FormatButton } from './components/FormatButton.jsx'
 import { HistoryPanel } from './components/HistoryPanel.jsx'
 import { MatrixRain } from './components/MatrixRain.jsx'
-import { PageInfo } from './components/PageInfo.jsx'
+import { ResultsPanel } from './components/ResultsPanel.jsx'
 import { ThemeToggle } from './components/ThemeToggle.jsx'
-import { TileGroups } from './components/Tiles.jsx'
+import { TileMapping } from './components/TileMapping.jsx'
 
-const REQUEST_TIMEOUT_MS = 30000
 const LOG_TAG_KEY = 'hr-api-tester:logTag'
 const MATRIX_KEY = 'hr-api-tester:matrix'
-const LEFT_WIDTH_KEY = 'hr-api-tester:leftWidth'
 const BODY_HEIGHT_KEY = 'hr-api-tester:bodyHeight'
-const TABS = ['tiles', 'json', 'headers'] // results views
-
-// Config-column sizing. PANEL_PAD is .panel's horizontal padding (14px each
-// side), so panelWidth = editorWidth + PANEL_PAD keeps the editor un-clipped.
-const PANEL_PAD = 28
 // Below this the two columns don't fit, so panes are tabbed instead.
 const MOBILE_QUERY = '(max-width: 820px)'
-const MIN_LEFT = 280
-const maxLeft = () => Math.min(1400, window.innerWidth - 320)
 
 export default function App() {
   const [loaded, setLoaded] = useState(null)
@@ -47,46 +40,31 @@ export default function App() {
 
 function Tester({ initial, save }) {
   const [preset, setPreset] = useState(initial.preset)
-  const [sessions, setSessions] = useState(initial.sessions)
+  const [sessions, setSessions] = useState(() => withResolvedUrls(initial.sessions))
   const cur = sessions[preset]
+  const isLegacy = !!PRESETS[preset]?.legacy
 
   // Each solution remembers its own results view, so sending or stepping
   // through history stays on JSON (say) instead of jumping back to tiles.
-  const tab = TABS.includes(cur.tab) ? cur.tab : 'tiles'
-  const setTab = (t) => patch({ tab: t })
+  const tab = RESULT_TABS.includes(cur.tab) ? cur.tab : 'tiles'
 
   // On narrow screens the side-by-side columns don't fit, so the request and
   // results panes become tabs and only one is shown at a time.
-  const [isMobile, setIsMobile] = useState(() => window.matchMedia(MOBILE_QUERY).matches)
+  const isMobile = useMediaQuery(MOBILE_QUERY)
   const [mobilePane, setMobilePane] = useState('request')
-  useEffect(() => {
-    const mq = window.matchMedia(MOBILE_QUERY)
-    const onChange = (e) => setIsMobile(e.matches)
-    mq.addEventListener('change', onChange)
-    return () => mq.removeEventListener('change', onChange)
-  }, [])
 
-  // Width of the config column, draggable via the gutter. Persisted across
-  // sessions (a layout preference, not per-request data).
-  const [leftWidth, setLeftWidth] = useStoredState(LEFT_WIDTH_KEY, (raw) =>
-    storedNumber(raw, MIN_LEFT, 1400, 420),
-  )
-
-  // Height of the JSON body editor, set by dragging its resize handle and
+  // The body editor: its height is set by dragging its resize handle and
   // persisted. Its *width* is not stored: the editor always fills the config
-  // column, so it follows the column as that is resized.
+  // column, and dragging it wider widens the column (useColumnResize).
+  const bodyRef = useRef(null)
+  const headersRef = useRef(null)
   const [bodyHeight, setBodyHeight] = useStoredState(BODY_HEIGHT_KEY, (raw) =>
     storedNumber(raw, 90, 4000, 260),
   )
-  // Width used to be pinned separately; drop any value left from then.
-  useEffect(() => writeStored('hr-api-tester:bodyWidth', null), [])
+  const { width: leftWidth, gutterProps } = useColumnResize(bodyRef, isMobile)
 
-  // In-flight requests per solution, so each can be cancelled (or timed out)
-  // and a request running in one solution doesn't lock the others.
-  const abortRef = useRef({})
-  const [inFlight, setInFlight] = useState({})
+  const { inFlight, run, cancel } = useRequests()
   const loading = !!inFlight[preset]
-  const setLoadingFor = (key, on) => setInFlight((m) => ({ ...m, [key]: on }))
 
   // Matrix mode: green-on-black look with digital rain behind the panels.
   // index.html applies the saved choice before first paint.
@@ -108,85 +86,12 @@ function Tester({ initial, save }) {
     (tag) => tag || null,
   )
 
-  // Dragging the editor's corner sideways widens the config column instead of
-  // the editor itself: the column grows to fit, then the editor snaps back to
-  // filling it. Capped at the column's own maximum.
-  const bodyRef = useRef(null)
-  useEffect(() => {
-    const el = bodyRef.current
-    if (isMobile || !el || typeof ResizeObserver === 'undefined') return
-    const ro = new ResizeObserver(() => {
-      if (!el.style.width) return // already filling the column
-      const max = maxLeft()
-      const needed = Math.min(el.offsetWidth + PANEL_PAD, max)
-      setLeftWidth((w) => (needed > w ? needed : w))
-      if (el.offsetWidth + PANEL_PAD >= max) {
-        // At the cap, stop the editor overflowing: the resize handle writes the
-        // inline width directly, so clear it and let the column bound it.
-        el.style.width = ''
-      }
-    })
-    ro.observe(el)
-    return () => ro.disconnect()
-  }, [isMobile])
-
-  const clampLeft = (w) => Math.min(Math.max(w, MIN_LEFT), maxLeft())
-
-  // Pointer events, so dragging works with mouse, touch and pen alike.
-  function startResize(e) {
-    if (e.button !== 0) return
-    e.preventDefault()
-    const startX = e.clientX
-    const startW = leftWidth
-    const onMove = (ev) => setLeftWidth(clampLeft(startW + ev.clientX - startX))
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      window.removeEventListener('pointerup', onUp)
-      window.removeEventListener('pointercancel', onUp)
-      document.body.style.cursor = ''
-      document.body.style.userSelect = ''
-    }
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp)
-    window.addEventListener('pointercancel', onUp)
-    document.body.style.cursor = 'col-resize'
-    document.body.style.userSelect = 'none'
+  // Apply `fn(session)` (returning the changed fields) to a solution's
+  // session; the active one unless `key` says otherwise.
+  function updateSession(fn, key = preset) {
+    setSessions((s) => ({ ...s, [key]: { ...s[key], ...fn(s[key]) } }))
   }
-
-  // Keyboard: ←/→ move the gutter (Shift for bigger steps), Home/End jump to
-  // the narrowest / widest column.
-  function resizeKey(e) {
-    const step = e.shiftKey ? 80 : 20
-    const next = {
-      ArrowLeft: leftWidth - step,
-      ArrowRight: leftWidth + step,
-      Home: MIN_LEFT,
-      End: maxLeft(),
-    }[e.key]
-    if (next == null) return
-    e.preventDefault()
-    setLeftWidth(clampLeft(next))
-  }
-
-  // Patch the active preset's session.
-  function patch(changes) {
-    setSessions((s) => ({ ...s, [preset]: { ...s[preset], ...changes } }))
-  }
-
-  // Keep the URL field showing the real resolved endpoint. Pages tracks the
-  // page key live; other presets are populated once (legacy ones then follow
-  // their parameters via setBody). Custom is left alone.
-  useEffect(() => {
-    if (preset === 'custom') return
-    if (PRESETS[preset].needsKey) {
-      patch({ url: resolveUrl(preset, cur.pagesKey, BASES) })
-    } else if (!cur.url) {
-      patch({ url: resolveUrl(preset, cur.pagesKey, BASES, cur.body) ?? '' })
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [preset, cur.pagesKey])
-
-  const isLegacy = !!PRESETS[preset]?.legacy
+  const patch = (changes) => updateSession(() => changes)
 
   // Legacy: editing the parameters rebuilds the URL. While they don't parse
   // (e.g. mid-paste) the URL is left as it was.
@@ -202,6 +107,9 @@ function Tester({ initial, save }) {
     if (!isLegacy || !url.includes('?')) return patch({ url })
     patch({ url, body: paramsFromUrl(url) })
   }
+
+  // Pages: the URL follows the page key.
+  const setPagesKey = (pagesKey) => patch({ pagesKey, url: resolveUrl(preset, pagesKey, BASES) })
 
   const paramsError = useMemo(() => {
     if (!isLegacy) return null
@@ -240,10 +148,17 @@ function Tester({ initial, save }) {
     return () => clearTimeout(t)
   }, [preset, sessions, persist])
 
-  // Flush immediately if the tab closes mid-debounce, so the last edits survive.
+  // Flush immediately when the tab is hidden or closed mid-debounce, so the
+  // last edits survive. `visibilitychange` comes first and is the reliable one
+  // on mobile, where a backgrounded tab may be killed without `pagehide`.
   useEffect(() => {
+    const onHide = () => document.visibilityState === 'hidden' && persist()
+    document.addEventListener('visibilitychange', onHide)
     window.addEventListener('pagehide', persist)
-    return () => window.removeEventListener('pagehide', persist)
+    return () => {
+      document.removeEventListener('visibilitychange', onHide)
+      window.removeEventListener('pagehide', persist)
+    }
   }, [persist])
 
   // Legacy parameters may be pasted as a query string or URL; formatting turns
@@ -262,7 +177,6 @@ function Tester({ initial, save }) {
     if (!replaceEditorText(bodyRef.current, body)) setBody(body)
   }
 
-  const headersRef = useRef(null)
   function formatHeaders() {
     if (!cur.headers.trim()) return
     let headers
@@ -283,81 +197,24 @@ function Tester({ initial, save }) {
     // The solution this request belongs to, even if another is selected
     // before it returns.
     const key = preset
-    patch({ error: null })
-    let parsedHeaders = {}
+    let headers
     try {
-      parsedHeaders = req.headers.trim() ? JSON.parse(req.headers) : {}
+      headers = parseHeaders(req.headers)
     } catch (e) {
       patch({ error: `Headers are not valid JSON: ${e.message}` })
       return
     }
-    setLoadingFor(key, true)
-    const sentUrl = withLogTag(req.url, logTag.trim())
-    // Snapshot the request now; the response (or transport error) is attached
-    // once it returns. The whole thing becomes an immutable history entry.
-    const ts = Date.now()
-    const snapshot = {
-      id: `${ts}-${Math.random().toString(36).slice(2, 7)}`,
-      ts,
-      method: req.method,
-      url: req.url,
-      sentUrl, // url plus apiLogTag, as actually fetched
-      pagesKey: req.pagesKey,
-      body: req.body,
-      headers: req.headers,
-      locked: false, // locked entries survive "clear all"
-    }
-    snapshot.summary = buildSummary(snapshot)
-    let entry
-    const started = performance.now()
-    const controller = new AbortController()
-    abortRef.current[key] = controller
-    const timeout = setTimeout(() => controller.abort('timeout'), REQUEST_TIMEOUT_MS)
-    try {
-      const init = { method: req.method, headers: { ...parsedHeaders }, signal: controller.signal }
-      if (sendsBody(req.method, req.body)) {
-        init.body = req.body
-        if (!hasContentType(init.headers)) init.headers['Content-Type'] = 'application/json'
-      }
-      const r = await fetch(sentUrl, init)
-      const text = await r.text()
-      let json = null
-      try {
-        json = JSON.parse(text)
-      } catch {
-        json = null
-      }
-      const data = {
-        ok: r.ok,
-        status: r.status,
-        statusText: r.statusText,
-        durationMs: Math.round(performance.now() - started),
-        requestUrl: sentUrl,
-        headers: Object.fromEntries(r.headers.entries()),
-        json,
-        text: json == null ? text : undefined,
-      }
-      entry = { ...snapshot, resp: data, error: null }
-    } catch (e) {
-      const aborted = controller.signal.aborted
-      const reason =
-        aborted && controller.signal.reason === 'timeout'
-          ? `Timed out after ${REQUEST_TIMEOUT_MS / 1000}s`
-          : aborted
-            ? 'Cancelled'
-            : `${e.message || e} (network/CORS error)`
-      entry = { ...snapshot, resp: null, error: reason }
-    } finally {
-      clearTimeout(timeout)
-      delete abortRef.current[key]
-    }
+    patch({ error: null })
+    const entry = await run(key, snapshotRequest(req, logTag), headers)
     // Prepend to this solution's history and view the new entry.
-    setSessions((s) => {
-      const sess = s[key]
-      const history = [entry, ...(sess.history || [])].slice(0, MAX_HISTORY)
-      return { ...s, [key]: { ...sess, history, viewId: entry.id, error: null } }
-    })
-    setLoadingFor(key, false)
+    updateSession(
+      (sess) => ({
+        history: [entry, ...(sess.history || [])].slice(0, MAX_HISTORY),
+        viewId: entry.id,
+        error: null,
+      }),
+      key,
+    )
     // Only jump to results if this solution is still the one on screen.
     if (isMobile && stateRef.current.preset === key) setMobilePane('results')
   }
@@ -377,6 +234,8 @@ function Tester({ initial, save }) {
     return () => window.removeEventListener('keydown', onKey)
   }, [])
 
+  // ---- History ----
+
   // Load a past request back into the form and show its response.
   function viewEntry(id) {
     const e = (cur.history || []).find((h) => h.id === id)
@@ -393,17 +252,11 @@ function Tester({ initial, save }) {
     })
   }
 
-  // Apply `fn(session)` (returning the changed fields) to the active
-  // solution's session.
-  function updateSession(fn) {
-    setSessions((s) => ({ ...s, [preset]: { ...s[preset], ...fn(s[preset]) } }))
-  }
   // Entries are immutable: an edit replaces the entry object (store.js relies
   // on that to save only what changed).
   const mapEntry = (id, fn) => (sess) => ({
     history: (sess.history || []).map((h) => (h.id === id ? fn(h) : h)),
   })
-
   const toggleLock = (id) => updateSession(mapEntry(id, (h) => ({ ...h, locked: !h.locked })))
   const setNote = (id, note) => updateSession(mapEntry(id, (h) => ({ ...h, note })))
 
@@ -419,9 +272,7 @@ function Tester({ initial, save }) {
   function clearHistory() {
     updateSession((sess) => {
       const history = (sess.history || []).filter((h) => h.locked)
-      const viewId = history.some((h) => h.id === sess.viewId)
-        ? sess.viewId
-        : (history[0]?.id ?? null)
+      const viewId = history.some((h) => h.id === sess.viewId) ? sess.viewId : (history[0]?.id ?? null)
       return { history, viewId, error: null }
     })
   }
@@ -452,95 +303,24 @@ function Tester({ initial, save }) {
     }
   }
 
+  // ---- Results ----
+
   const history = cur.history || []
   const viewed = history.find((h) => h.id === cur.viewId) || history[0] || null
-
-  const resp = viewed?.resp || null
-  const apiError = useMemo(() => responseError(resp), [resp])
-
-  const payload = resp?.json
-  // Products come back as one or more "boxes" (recoms can request several at
-  // once — each responses[] entry is its own box with its own step waterfall).
-  const { boxes, usedPath } = useMemo(
-    () => extractResult(payload, cur.productsPath, cur.fieldMap),
-    [payload, cur.productsPath, cur.fieldMap],
-  )
-  // Search / Pages: which slice of the full result set this response is.
-  const paging = useMemo(() => pageInfo(payload), [payload])
-  const allTiles = useMemo(() => boxes.flatMap((b) => b.tiles), [boxes])
-  const anySteps = useMemo(() => boxes.some((b) => b.steps.length > 0), [boxes])
-  const stepColors = useMemo(() => stepColorMap(boxes), [boxes])
+  const result = useResult(viewed?.resp || null, cur.productsPath, cur.fieldMap)
 
   // Previous / next page: rewrite the request's offset and send it.
   const canPage = useMemo(
-    () => pageRequest(preset, cur.body, paging, 1) != null,
-    [preset, cur.body, paging],
+    () => pageRequest(preset, cur.body, result.paging, 1) != null,
+    [preset, cur.body, result.paging],
   )
   function goPage(dir) {
-    const body = pageRequest(preset, cur.body, paging, dir)
+    const body = pageRequest(preset, cur.body, result.paging, dir)
     if (body == null || loading) return
     const url = isLegacy ? (resolveUrl(preset, cur.pagesKey, BASES, body) ?? cur.url) : cur.url
     patch({ body, url })
     send({ body, url })
   }
-
-  // Extra product fields shown on every tile (dot paths allowed).
-  const extraFields = useMemo(
-    () =>
-      (cur.tileFields || '')
-        .split(',')
-        .map((s) => s.trim())
-        .filter(Boolean),
-    [cur.tileFields],
-  )
-
-  // Only walked when the Tile mapping panel is actually open.
-  const [mappingOpen, setMappingOpen] = useState(false)
-  const arrayPaths = useMemo(
-    () => (mappingOpen && payload ? findArrayPaths(payload) : []),
-    [mappingOpen, payload],
-  )
-
-  // Group products by their countAfterSource waterfall step (Recommendations).
-  const [groupBySource, setGroupBySource] = useState(true)
-
-  // Real-time results filter. Empty field = match any value in any field.
-  const [filterText, setFilterText] = useState('')
-  const [filterField, setFilterField] = useState('')
-
-  // Field names present on the current products, for the field selector.
-  const filterFields = useMemo(() => {
-    const set = new Set()
-    for (const t of allTiles) {
-      if (t.raw && typeof t.raw === 'object') {
-        for (const k of Object.keys(t.raw)) set.add(k)
-      }
-    }
-    return Array.from(set)
-  }, [allTiles])
-
-  // Filter each box's tiles independently, keeping box structure.
-  const filteredBoxes = useMemo(() => {
-    const q = filterText.trim().toLowerCase()
-    if (!q) return boxes
-    const match = (t) =>
-      filterField ? valueMatches(t.raw?.[filterField], q) : t.search.includes(q)
-    return boxes.map((b) => ({ ...b, tiles: b.tiles.filter(match) }))
-  }, [boxes, filterText, filterField])
-
-  const totalTiles = allTiles.length
-  const shownTiles = filteredBoxes.reduce((n, b) => n + b.tiles.length, 0)
-  // Retail media banners share the result array with products (Pages), so
-  // call them out separately — the split is the point when testing placement.
-  const bannerCount = useMemo(() => allTiles.filter((t) => t.isBanner).length, [allTiles])
-  const sponsoredCount = useMemo(
-    () => allTiles.filter((t) => !t.isBanner && t.campaignId).length,
-    [allTiles],
-  )
-  // Search: how much AI synonym expansion contributed (suggestedProductStatus:
-  // NO_SUGGESTED / MIXED / ONLY_SUGGESTED) and how many products it alone found.
-  const aiStatus = payload?.products?.suggestedProductStatus
-  const aiCount = useMemo(() => allTiles.filter((t) => t.suggested).length, [allTiles])
 
   return (
     <div className="app">
@@ -573,7 +353,7 @@ function Tester({ initial, save }) {
               onClick={() => setMobilePane(key)}
             >
               {label}
-              {key === 'results' && resp ? ` · ${totalTiles}` : ''}
+              {key === 'results' && viewed?.resp ? ` · ${result.allTiles.length}` : ''}
             </button>
           ))}
         </div>
@@ -589,8 +369,8 @@ function Tester({ initial, save }) {
         >
           {storageFull && (
             <div className="error">
-              Out of browser storage — history is no longer being saved. Remove some
-              history entries (or “clear all”) to free space.
+              Out of browser storage — history is no longer being saved. Remove some history entries
+              (or “clear all”) to free space.
             </div>
           )}
 
@@ -599,6 +379,7 @@ function Tester({ initial, save }) {
               <button
                 key={key}
                 className={preset === key ? 'chip active' : 'chip'}
+                aria-pressed={preset === key}
                 onClick={() => setPreset(key)}
               >
                 {p.label}
@@ -607,7 +388,12 @@ function Tester({ initial, save }) {
           </div>
 
           <div className="row">
-            <select value={cur.method} onChange={(e) => patch({ method: e.target.value })} className="method">
+            <select
+              value={cur.method}
+              onChange={(e) => patch({ method: e.target.value })}
+              className="method"
+              aria-label="HTTP method"
+            >
               {['GET', 'POST', 'PUT', 'PATCH', 'DELETE'].map((m) => (
                 <option key={m}>{m}</option>
               ))}
@@ -616,19 +402,15 @@ function Tester({ initial, save }) {
               className="url"
               value={cur.url}
               placeholder="https://api.helloretail.com/..."
+              aria-label="Request URL"
               onChange={(e) => setUrl(e.target.value)}
             />
             {loading ? (
-              <button className="send cancel" onClick={() => abortRef.current[preset]?.abort()}>
+              <button className="send cancel" onClick={() => cancel(preset)}>
                 Cancel
               </button>
             ) : (
-              <button
-                className="send"
-                onClick={() => send()}
-                disabled={!cur.url}
-                title="Send (Ctrl+Enter)"
-              >
+              <button className="send" onClick={() => send()} disabled={!cur.url} title="Send (Ctrl+Enter)">
                 Send
               </button>
             )}
@@ -653,18 +435,19 @@ function Tester({ initial, save }) {
 
           {PRESETS[preset]?.needsKey && (
             <>
-              <label className="lbl">Page key (appended to the Pages endpoint)</label>
+              <label className="lbl" htmlFor="pages-key">Page key (appended to the Pages endpoint)</label>
               <input
+                id="pages-key"
                 className="url"
                 value={cur.pagesKey}
                 placeholder="Pages key here"
-                onChange={(e) => patch({ pagesKey: e.target.value })}
+                onChange={(e) => setPagesKey(e.target.value)}
               />
             </>
           )}
 
           <div className="edhead">
-            <label className="lbl">
+            <label className="lbl" htmlFor="body-editor">
               {isLegacy ? 'Parameters (JSON from the API log, or a query string)' : 'Body (JSON)'}
             </label>
             <FormatButton onClick={formatBody} />
@@ -677,6 +460,7 @@ function Tester({ initial, save }) {
             </div>
           )}
           <textarea
+            id="body-editor"
             ref={bodyRef}
             className="code"
             value={cur.body}
@@ -696,10 +480,11 @@ function Tester({ initial, save }) {
           <details>
             <summary>Headers</summary>
             <div className="edhead">
-              <label className="lbl">Headers (JSON)</label>
+              <label className="lbl" htmlFor="headers-editor">Headers (JSON)</label>
               <FormatButton onClick={formatHeaders} />
             </div>
             <textarea
+              id="headers-editor"
               ref={headersRef}
               className="code"
               value={cur.headers}
@@ -710,42 +495,13 @@ function Tester({ initial, save }) {
             />
           </details>
 
-          <details onToggle={(e) => setMappingOpen(e.currentTarget.open)}>
-            <summary>Tile mapping</summary>
-            <label className="lbl">Products array path (blank = auto-detect)</label>
-            <input
-              className="url"
-              value={cur.productsPath}
-              placeholder="e.g. response.products"
-              onChange={(e) => patch({ productsPath: e.target.value })}
-            />
-            {arrayPaths.length > 0 && (
-              <div className="paths">
-                {arrayPaths.slice(0, 6).map((p) => (
-                  <button key={p.path} className="chip sm" onClick={() => patch({ productsPath: p.path })}>
-                    {p.path || '(root)'} · {p.length}
-                  </button>
-                ))}
-              </div>
-            )}
-            {Object.keys(DEFAULT_FIELD_MAP).map((f) => (
-              <div className="row" key={f}>
-                <span className="fname">{f}</span>
-                <input
-                  className="url"
-                  value={cur.fieldMap[f] || ''}
-                  onChange={(e) => patch({ fieldMap: { ...cur.fieldMap, [f]: e.target.value } })}
-                />
-              </div>
-            ))}
-            <label className="lbl">Extra fields on tiles (comma-separated, dot paths ok)</label>
-            <input
-              className="url"
-              value={cur.tileFields || ''}
-              placeholder="e.g. inStock, brand, extraData.color"
-              onChange={(e) => patch({ tileFields: e.target.value })}
-            />
-          </details>
+          <TileMapping
+            productsPath={cur.productsPath}
+            fieldMap={cur.fieldMap}
+            tileFields={cur.tileFields}
+            payload={result.payload}
+            onPatch={patch}
+          />
 
           <HistoryPanel
             history={history}
@@ -761,195 +517,19 @@ function Tester({ initial, save }) {
         </section>
 
         {/* ---- Drag handle to resize the config column ---- */}
-        <div
-          className="gutter"
-          role="separator"
-          aria-orientation="vertical"
-          aria-label="Resize request panel"
-          aria-valuenow={Math.round(leftWidth)}
-          aria-valuemin={MIN_LEFT}
-          aria-valuemax={Math.round(maxLeft())}
-          tabIndex={isMobile ? -1 : 0}
-          onPointerDown={startResize}
-          onKeyDown={resizeKey}
-          title="Drag (or focus and use ←/→) to resize"
+        <div className="gutter" {...gutterProps} />
+
+        <ResultsPanel
+          entry={viewed}
+          result={result}
+          error={cur.error}
+          tab={tab}
+          onTab={(t) => patch({ tab: t })}
+          tileFields={cur.tileFields}
+          onPage={canPage ? goPage : null}
+          busy={loading}
+          hidden={isMobile && mobilePane !== 'results'}
         />
-
-        {/* ---- Results panel ---- */}
-        <section className="panel results" hidden={isMobile && mobilePane !== 'results'}>
-          <div className="row statusbar">
-            {resp && (
-              <>
-                <span className={resp.ok && !apiError ? 'badge ok' : 'badge bad'}>
-                  {`${resp.status} ${resp.statusText}`.trim()}
-                  {resp.ok && apiError ? ' · error in body' : ''}
-                </span>
-                <span className="hint">{resp.durationMs} ms</span>
-                {usedPath !== undefined && payload && !apiError && (
-                  <span className="hint">
-                    {filterText.trim() ? `${shownTiles} / ${totalTiles}` : totalTiles} tiles
-                    {bannerCount ? ` · ${bannerCount} banner${bannerCount > 1 ? 's' : ''}` : ''}
-                    {sponsoredCount ? ` · ${sponsoredCount} sponsored` : ''}
-                    {aiCount ? ` · ${aiCount} AI match${aiCount === 1 ? '' : 'es'}` : ''}
-                    {boxes.length > 1 ? ` · ${boxes.length} boxes` : ''}
-                    {usedPath ? ` from "${usedPath}"` : ''}
-                  </span>
-                )}
-                {aiStatus === 'ONLY_SUGGESTED' && !apiError && (
-                  <span
-                    className="badge ai"
-                    title="suggestedProductStatus: ONLY_SUGGESTED — nothing matched the query directly; every product came from AI synonym expansion"
-                  >
-                    only AI matches
-                  </span>
-                )}
-              </>
-            )}
-            <div className="spacer" />
-            {TABS.map((t) => (
-              <button
-                key={t}
-                className={tab === t ? 'chip active' : 'chip'}
-                onClick={() => setTab(t)}
-              >
-                {t}
-              </button>
-            ))}
-          </div>
-
-          <div className="results-body">
-          {cur.error && <div className="error">{cur.error}</div>}
-
-          {/* Failed requests: the error replaces the products, so it can be
-              read without switching to the json tab. */}
-          {viewed?.error && <ErrorCard title="Request failed" message={viewed.error} />}
-          {tab === 'tiles' && apiError && (
-            <ErrorCard
-              title={`Request failed · HTTP ${resp.status}`}
-              code={apiError.code}
-              message={apiError.message}
-              detail={apiError.detail}
-            />
-          )}
-
-          {!resp && !viewed?.error && !cur.error && (
-            <div className="empty">Send a request to see results.</div>
-          )}
-
-          {tab === 'tiles' && resp && !apiError && (
-            <>
-              {paging && (
-                <PageInfo
-                  {...paging}
-                  onPage={canPage ? goPage : null}
-                  busy={loading}
-                />
-              )}
-              {totalTiles > 0 && (
-                <div className="row filterbar">
-                  <input
-                    className="url"
-                    placeholder="Filter products… e.g. Zion"
-                    value={filterText}
-                    onChange={(e) => setFilterText(e.target.value)}
-                  />
-                  <select
-                    className="method"
-                    value={filterField}
-                    onChange={(e) => setFilterField(e.target.value)}
-                    title="Field to filter on"
-                  >
-                    <option value="">Any field</option>
-                    {filterFields.map((f) => (
-                      <option key={f} value={f}>{f}</option>
-                    ))}
-                  </select>
-                  {filterText && (
-                    <button className="link" onClick={() => setFilterText('')}>clear</button>
-                  )}
-                  {anySteps && (
-                    <label className="grouptoggle" title="Group products by countAfterSource step">
-                      <input
-                        type="checkbox"
-                        checked={groupBySource}
-                        onChange={(e) => setGroupBySource(e.target.checked)}
-                      />
-                      group by step
-                    </label>
-                  )}
-                </div>
-              )}
-
-              {totalTiles === 0 && (
-                <div className="empty">
-                  No products found. Open “Tile mapping” to set the array path / fields.
-                </div>
-              )}
-              {totalTiles > 0 && shownTiles === 0 && (
-                <div className="empty">
-                  No products match “{filterText}”{filterField ? ` in ${filterField}` : ''}.
-                </div>
-              )}
-
-              {filteredBoxes.map((box, bi) =>
-                box.tiles.length === 0 ? null : box.key ? (
-                  // Multiple recommendation boxes: label each one.
-                  <div className="box" key={box.key}>
-                    <div className="boxhead">
-                      Box: {box.key} · {box.tiles.length}
-                    </div>
-                    <TileGroups
-                      tiles={box.tiles}
-                      steps={box.steps}
-                      grouped={groupBySource}
-                      colors={stepColors}
-                      extra={extraFields}
-                    />
-                  </div>
-                ) : (
-                  <TileGroups
-                    key={bi}
-                    tiles={box.tiles}
-                    steps={box.steps}
-                    grouped={groupBySource}
-                    colors={stepColors}
-                    extra={extraFields}
-                  />
-                ),
-              )}
-            </>
-          )}
-
-          {/* The copy button sits on the view it copies. */}
-          {tab === 'json' && resp && (
-            <div className="codewrap">
-              <pre className="code view">{JSON.stringify(resp.json ?? resp.text, null, 2)}</pre>
-              <CopyButton
-                className="copyfloat"
-                icon
-                label="copy JSON"
-                title="Copy the full JSON response"
-                text={() =>
-                  resp.json != null ? JSON.stringify(resp.json, null, 2) : (resp.text ?? '')
-                }
-              />
-            </div>
-          )}
-
-          {tab === 'headers' && resp && (
-            <div className="codewrap">
-              <pre className="code view">{JSON.stringify(resp.headers, null, 2)}</pre>
-              <CopyButton
-                className="copyfloat"
-                icon
-                label="copy headers"
-                title="Copy the response headers"
-                text={() => JSON.stringify(resp.headers ?? {}, null, 2)}
-              />
-            </div>
-          )}
-          </div>
-        </section>
       </div>
     </div>
   )

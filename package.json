@@ -3,27 +3,31 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "Local tool to test Hello Retail APIs (Recommendations, Search, Pages) and render results as product tiles.",
+  "description": "Tool to test Hello Retail APIs (Recommendations, Search, Pages) and render results as product tiles.",
   "scripts": {
-    "dev": "concurrently -n server,client -c blue,magenta \"npm:dev:server\" \"npm:dev:client\"",
-    "dev:server": "node --watch server/index.js",
-    "dev:client": "vite",
+    "dev": "vite",
     "build": "vite build",
     "preview": "vite preview",
-    "start": "node server/index.js",
-    "serve": "vite build && node server/index.js",
+    "serve": "vite build && vite preview",
+    "lint": "eslint .",
     "test": "vitest run"
   },
   "dependencies": {
-    "express": "^4.19.2",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
   "devDependencies": {
-    "@vitejs/plugin-react": "^4.3.1",
-    "concurrently": "^9.0.1",
-    "fake-indexeddb": "^6.0.0",
-    "vite": "^5.4.8",
-    "vitest": "^2.1.9"
+    "@eslint/js": "^10.0.1",
+    "@vitejs/plugin-react": "^6.3.0",
+    "eslint": "^10.15.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-react-refresh": "^0.5.8",
+    "fake-indexeddb": "^6.2.8",
+    "globals": "^17.14.0",
+    "vite": "^8.4.0",
+    "vitest": "^5.1.2"
+  },
+  "engines": {
+    "node": ">=22.12"
   }
 }

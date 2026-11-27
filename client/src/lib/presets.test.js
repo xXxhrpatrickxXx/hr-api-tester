@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { BASES, PRESETS, loadState, resolveUrl } from './presets.js'
+import { BASES, PRESETS, loadState, resolveUrl, withResolvedUrls } from './presets.js'
 
 describe('resolveUrl', () => {
   it('uses the base URL for the managed APIs', () => {
@@ -39,5 +39,28 @@ describe('loadState', () => {
       sessions: { legacySearch: { body: '', url: 'https://h/api?format=json&q=sko' } },
     })
     expect(JSON.parse(sessions.legacySearch.body)).toEqual({ q: 'sko' })
+  })
+})
+
+describe('withResolvedUrls', () => {
+  const { sessions } = loadState({})
+
+  it('fills empty URLs and keeps Pages on its page key', () => {
+    const out = withResolvedUrls({
+      ...sessions,
+      pages: { ...sessions.pages, pagesKey: 'k1', url: 'stale' },
+    })
+    expect(out.search.url).toBe(BASES.search)
+    expect(out.pages.url).toBe(`${BASES.pages}/k1`)
+    expect(out.legacySearch.url.startsWith(BASES.legacySearch)).toBe(true)
+  })
+
+  it('keeps URLs already set, and leaves Custom alone', () => {
+    const out = withResolvedUrls({
+      ...sessions,
+      search: { ...sessions.search, url: 'https://example.com/mine' },
+    })
+    expect(out.search.url).toBe('https://example.com/mine')
+    expect(out.custom).toBe(sessions.custom)
   })
 })

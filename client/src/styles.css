@@ -30,6 +30,10 @@
   --border-strong: #4a5263;
   --hover-bg: #272c37;
   --accent-hover: #8fbcff;
+  --json-string: #8ddb8c;
+  --json-number: #f2b866;
+  --json-literal: #d2a8ff;
+  --json-mark: rgba(210, 153, 34, .45);
 }
 
 /* Set on <html> by the inline script in index.html (before first paint) and
@@ -66,6 +70,10 @@
   --border-strong: #aeb6c2;
   --hover-bg: #e2e6ec;
   --accent-hover: #1d4ed8;
+  --json-string: #116329;
+  --json-number: #953800;
+  --json-literal: #8250df;
+  --json-mark: rgba(212, 167, 44, .4);
 }
 
 * { box-sizing: border-box; }
@@ -150,24 +158,46 @@ body {
 /* Full-bleed JSON/headers view; the per-tile raw view (.sm) stays compact. */
 .code.view:not(.sm) { width: 100%; height: 100%; max-height: none; }
 .code.view.sm { max-height: 240px; font-size: 11.5px; }
-/* JSON / headers view with its copy button pinned top-right (clear of the
-   scrollbar), staying put while the text scrolls under it. */
-.codewrap { position: relative; height: 100%; }
-/* Solid, full-contrast surface with a lifted shadow so it reads as a control
-   on top of the text, not part of it. */
-.copyfloat {
-  position: absolute; top: 10px; right: 22px;
-  display: inline-flex; align-items: center; gap: 6px;
-  background: var(--panel); color: var(--text);
-  border: 1px solid var(--border-strong); border-radius: 6px;
-  padding: 5px 10px; font-size: 12px; font-weight: 600; cursor: pointer;
-  box-shadow: 0 1px 2px rgba(0, 0, 0, .12), 0 3px 10px rgba(0, 0, 0, .18);
-  transition: border-color .12s, background .12s, color .12s;
+/* ---- JSON / headers view: toolbar over a collapsible tree (or raw text) ---- */
+.jsonview { display: flex; flex-direction: column; height: 100%; min-height: 0; gap: 8px; }
+.jtools { display: flex; align-items: center; flex-wrap: wrap; gap: 6px 10px; }
+.jtools .url { flex: 0 1 280px; padding: 5px 8px; font-size: 12px; }
+.jsonview > .code.view { flex: 1; min-height: 0; height: auto; }
+.jtree { white-space: normal; }
+.jrow {
+  display: flex; align-items: baseline; gap: 0; min-width: 0;
+  border-radius: 4px; padding-right: 6px;
 }
-.copyfloat:hover { border-color: var(--accent); color: var(--accent); }
-.copyfloat:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
-.copyfloat[data-state="ok"] { background: var(--ok-bg); color: var(--ok-text); border-color: var(--ok); }
-.copyfloat[data-state="err"] { background: var(--bad-bg); color: var(--bad-text); border-color: var(--bad); }
+.jrow:hover { background: var(--hover-bg); }
+.jrow.hit { background: var(--active-bg); }
+.jtoggle {
+  flex: 0 0 16px; width: 16px; padding: 0; margin-right: 2px;
+  background: none; border: 0; color: var(--muted); cursor: pointer;
+  font: inherit; text-align: center;
+}
+.jtoggle:hover { color: var(--text); }
+.jtoggle:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; border-radius: 3px; }
+.jkey { color: var(--accent); white-space: nowrap; }
+.jkey.idx { color: var(--muted); }
+.jpunct { color: var(--muted); white-space: pre; }
+.jsum { color: var(--muted); }
+.jval { min-width: 0; white-space: pre-wrap; word-break: break-word; }
+.jval.string { color: var(--json-string); }
+.jval.number { color: var(--json-number); }
+.jval.boolean, .jval.null { color: var(--json-literal); }
+.jtree mark { background: var(--json-mark); color: inherit; border-radius: 2px; }
+/* Row actions (expand / collapse everything inside, copy path): right after
+   the entry, shown on the row being hovered or focused. */
+.jacts { display: flex; flex: 0 0 auto; gap: 2px; padding-left: 10px; visibility: hidden; }
+.jrow:hover .jacts, .jacts:focus-within, .jacts:has([data-state="ok"]) { visibility: visible; }
+.jact {
+  padding: 0 5px; background: none; border: 0; color: var(--muted); cursor: pointer;
+  font: inherit; font-size: 11px; white-space: nowrap; border-radius: 3px;
+}
+.jact:hover { color: var(--accent); }
+.jact:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.jact[data-state="ok"] { color: var(--ok-text); }
+.jmore { display: block; padding: 2px 0; font-family: inherit; }
 
 details { margin-bottom: 10px; }
 summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 8px; }
@@ -200,6 +230,8 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
 .hist-head + .hint { margin-bottom: 8px; }
 /* A note of your own replaces the generated summary. */
 .hist-sum.note { font-weight: 600; }
+/* Inline note editor, in place of the row's summary. */
+.hist-note { flex: 1; margin: 3px; padding: 4px 7px; font-size: 12px; }
 
 /* API log tag: label inline with its input. */
 .logtag .lbl { margin: 0; white-space: nowrap; cursor: help; }
@@ -296,6 +328,9 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
   .panel.results { display: block; overflow: visible; }
   .results-body { overflow: visible; min-height: 0; }
   .code.view:not(.sm) { height: auto; max-height: 75vh; }
+  .jsonview { height: auto; }
+  .jtools .url { flex: 1 1 100%; }
+  .jacts { visibility: visible; }
   .panel.request { border-right: 0; }
   .gutter { display: none; }
   /* The status row (badge, timing, view chips) must wrap, not overflow. */
@@ -407,6 +442,10 @@ summary { cursor: pointer; color: var(--muted); font-size: 13px; margin-bottom: 
   --code-bg: rgba(0, 0, 0, .9);
   --code-text: #4dff7c;
   --noimg: #22b34f;
+  --json-string: #4dff7c;
+  --json-number: #c8ffd6;
+  --json-literal: #7dff9e;
+  --json-mark: rgba(0, 255, 65, .3);
 }
 :root[data-matrix] body {
   background: #000;
